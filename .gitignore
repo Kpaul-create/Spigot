@@ -1,0 +1,6 @@
+node_modules/
+.env
+.dynamic-wallet.json
+src/.vite/
+dist/
+*.log
