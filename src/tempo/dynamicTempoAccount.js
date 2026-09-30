@@ -23,6 +23,7 @@
  * `@dynamic-labs-wallet/node-evm` bundles macOS/Linux-only MPC native binaries
  * and cannot be imported on Windows at all.
  */
+
 import { bytesToHex, keccak256, parseSignature, serializeSignature, stringToHex } from 'viem';
 import { toAccount } from 'viem/accounts';
 import { Transaction as TempoTransaction } from 'viem/tempo';
@@ -86,9 +87,12 @@ export function mapTransactionToEvmTransaction(transaction) {
  *
  * Supports Tempo envelopes and falls back to viem's serializer for standard
  * transaction types, so the same adapter works on any EVM chain.
+ *
+ * `viem/tempo` now returns a `Promise` from `Transaction.serialize`, so this
+ * wrapper is async and always awaits it.
  */
-export function tempoTransactionSerializer(transaction, signature) {
-  return TempoTransaction.serialize(transaction, signature);
+export async function tempoTransactionSerializer(transaction, signature) {
+  return await TempoTransaction.serialize(transaction, signature);
 }
 
 /**
@@ -117,10 +121,12 @@ function toPresignTransaction(transaction) {
 /**
  * Computes the keccak256 sign payload Tempo expects for a transaction
  * (equivalent to `TxEnvelopeTempo.getSignPayload`).
+ *
+ * Async because the underlying serializer now returns a Promise.
  */
-export function getTempoSignPayload(transaction, options = {}) {
+export async function getTempoSignPayload(transaction, options = {}) {
   const serializer = options.serializer ?? tempoTransactionSerializer;
-  return keccak256(serializer(toPresignTransaction(transaction)));
+  return keccak256(await serializer(toPresignTransaction(transaction)));
 }
 
 /**
@@ -234,12 +240,12 @@ export function createDynamicTempoAccount(parameters) {
     },
     async signTransaction(transaction, options) {
       const serializer = options?.serializer ?? tempoTransactionSerializer;
-      const unsignedTransaction = serializer(toPresignTransaction(transaction));
+      const unsignedTransaction = await serializer(toPresignTransaction(transaction));
       const serializedSignature = signMode === 'prehashed'
         ? await signHash(keccak256(unsignedTransaction), transaction)
         : await signSerializedTransaction(unsignedTransaction, transaction);
       const { r, s, yParity } = parseSignature(serializedSignature);
-      return serializer(withoutSenderSignature(transaction), { r, s, yParity });
+      return await serializer(withoutSenderSignature(transaction), { r, s, yParity });
     },
   });
 
