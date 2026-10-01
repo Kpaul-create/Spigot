@@ -123,6 +123,83 @@ body {
   animation: spinSlow 0.45s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
+/* ─── Landing ambient system ────────────────────────────────────────────────── */
+
+/* The landing page mounts a single fixed gradient (AmbientBackdrop) that runs
+   from the hero all the way through the footer, so every per-section fill is
+   gone. When that root is present the whole shell is repainted on a dark
+   palette: each `var(--color-*)` utility inside the page — hero copy, glass
+   cards, nav, footer — resolves light-on-dark automatically instead of each
+   component having to know it is sitting on a dark surface.
+
+   Scoping the override with `:has()` keeps the rest of the site on the normal
+   theme palette and leaves the theme toggle working everywhere. */
+body:has([data-ambient-root]) {
+  --color-bg-page: #08090c;
+  --color-bg-nav: rgba(8, 9, 12, 0.55);
+  --color-text-primary: #e8f0ea;
+  --color-text-secondary: #9db1a3;
+  --color-text-accent: #4ade80;
+  --color-text-on-accent: #04140a;
+  --color-accent: #10b981;
+  --color-border-subtle: rgba(255, 255, 255, 0.08);
+  --color-border-control: rgba(255, 255, 255, 0.14);
+}
+
+/* The footer has to read as the tail of the same gradient: no opaque slab and
+   no hard rule across the page. It also needs a stacking context of its own,
+   because the ambient layer is `fixed` (and therefore positioned) while the
+   footer is not — without this the gradient would paint over the links. */
+body:has([data-ambient-root]) footer {
+  position: relative;
+  z-index: 10;
+  background: transparent;
+  border-top: 0;
+}
+
+/* ─── Glass cards ──────────────────────────────────────────────────────────── */
+
+/* Spec surface: backdrop-blur-md bg-white/[0.03] border-white/[0.08]
+   rounded-2xl, plus a lift on hover so the cards feel like physical panes
+   catching the ambient light. */
+.glass {
+  border-radius: 1rem;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  transition:
+    transform 0.35s cubic-bezier(0.22, 1, 0.36, 1),
+    background-color 0.35s ease,
+    border-color 0.35s ease,
+    box-shadow 0.35s ease;
+}
+
+.glass:hover {
+  transform: translateY(-2px);
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.16);
+  box-shadow: 0 18px 40px -20px rgba(16, 185, 129, 0.45);
+}
+
+/* A quieter variant for dense repeated rows, where a lift per row would be
+   noise. Keeps the same surface treatment without the hover elevation. */
+.glass-flat {
+  border-radius: 1rem;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .glass,
+  .glass:hover {
+    transform: none;
+    transition: none;
+  }
+}
+
 /* ─── Small utilities used across pages ────────────────────────────────────── */
 
 .mu {

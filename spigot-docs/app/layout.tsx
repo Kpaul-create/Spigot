@@ -4,6 +4,7 @@ import { RootProvider } from 'fumadocs-ui/provider/next';
 import { Inter } from 'next/font/google';
 import { Nav } from '@/components/nav';
 import { Footer } from '@/components/footer';
+import { AmbientBackdrop } from '@/components/ambient-backdrop';
 import './global.css';
 import './spigot.css';
 
@@ -25,6 +26,7 @@ export default function Layout({ children }: LayoutProps<'/'>) {
         <body className="min-h-screen bg-[var(--color-bg-page)] text-[var(--color-text-primary)] antialiased">
           <RootProvider theme={{ defaultTheme: 'light' }}>
             <div className="flex min-h-screen flex-col">
+              <AmbientBackdrop />
               <Nav />
               <main className="flex-1">{children}</main>
               <Footer />
