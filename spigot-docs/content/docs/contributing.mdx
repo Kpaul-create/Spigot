@@ -278,21 +278,7 @@ assert.equal(payload, Transaction.z_TxEnvelopeTempo.getSignPayload(tempoTransact
 
 ---
 
-## Project Structure
-
-```
-src/tempo/
-├── config.js              # Environment configuration, .env parsing
-├── run.js                 # Five-step walkthrough (main entry point)
-├── dynamicWallet.js       # Steps 1-2: Dynamic client + wallet creation
-├── dynamicTempoAccount.js # Step 4: Tempo-compatible viem account adapter
-├── faucet.js              # Step 3: Tempo Moderato faucet funding
-├── mppClient.js           # Step 5: MPP payment client
-├── dryRunClient.js        # Local-key stand-in for testing
-└── selfTest.js            # Offline validation suite
-```
-
-### Module Dependencies
+## Module Dependencies
 
 ```
 config.js          ← (no dependencies)

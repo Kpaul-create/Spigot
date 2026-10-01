@@ -478,16 +478,20 @@ export function HeroScene() {
         return { z, x: -0.4 + W * (narrow ? 0.06 : 0.27), y: narrow ? -H * 0.2 : 0 };
       }
 
-      const clock = new THREE.Clock();
+      // THREE.Clock is deprecated in favour of Timer, which separates "advance
+      // the clock" (update) from "read the clock" (getDelta/getElapsed) and so
+      // reports the same delta no matter how many times it is read per frame.
+      const timer = new THREE.Timer();
       let spigotOn = true;
 
-      function animate() {
+      function animate(timestamp?: number) {
         // Schedule the next frame *before* the visibility bail-out. Returning
         // early here would permanently kill the loop once the hero scrolls out
         // of view, and the observer can never restart it.
         requestAnimationFrame(animate);
         if (!spigotOn) return;
-        const dt = Math.min(clock.getDelta(), 0.1);
+        timer.update(timestamp);
+        const dt = Math.min(timer.getDelta(), 0.1);
 
         knob.rotation.y += dt * 2.5;
 
