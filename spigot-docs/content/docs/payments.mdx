@@ -1,0 +1,447 @@
+---
+title: Payments
+description: How a 402 becomes a settled receipt on Tempo Moderato.
+---
+
+## How the 402 Payment Flow Works
+
+The Spigot payment system is built on the **MPP (Micropayment Protocol)**, which extends HTTP with a `402 Payment Required` status code. This creates a **payment-gated API** where the HTTP protocol itself handles the payment handshake — no external SDK or payment processor is needed.
+
+### The Protocol
+
+```
+┌──────────┐                                          ┌──────────┐
+│  Client  │                                          │  Server  │
+│  (mppx)  │                                          │  (API)   │
+└────┬─────┘                                          └────┬─────┘
+     │                                                     │
+     │  1. GET /v1/endpoint                                │
+     │ ──────────────────────────────────────────────────▶ │
+     │                                                     │
+     │  2. 402 Payment Required                            │
+     │     Payment-Required: tempo                         │
+     │     Payment-Info: {                                 │
+     │       amount: "40000",                              │
+     │       token: "0x20c0…0000",                         │
+     │       chainId: 42431                                │
+     │     }                                               │
+     │ ◀────────────────────────────────────────────────── │
+     │                                                     │
+     │  3. [mppx intercepts the 402]                       │
+     │     a. Parse Payment-Info header                    │
+     │     b. Build Tempo charge transaction               │
+     │     c. Sign with Dynamic MPC wallet                 │
+     │     d. Submit to Tempo sequencer                   │
+     │                                                     │
+     │  4. GET /v1/endpoint                                │
+     │     Payment-Receipt: 0x76f86c…                     │
+     │ ──────────────────────────────────────────────────▶ │
+     │                                                     │
+     │     [Server verifies receipt on-chain]              │
+     │                                                     │
+     │  5. 200 OK { result: "..." }                        │
+     │ ◀────────────────────────────────────────────────── │
+     │                                                     │
+```
+
+### Why 402?
+
+HTTP status code `402 Payment Required` was reserved in the original HTTP/1.1 spec but never widely adopted. MPP repurposes it for exactly what it was intended: **the server requires payment before serving the request**.
+
+### Payment Receipt Format
+
+The receipt is a **signed Tempo transaction envelope** (type `0x76`):
+
+```
+0x76 ← Tempo transaction type prefix
+  ├── chainId: 42431
+  ├── nonce: <sequence>
+  ├── calls: [{ to: <fee-collector>, data: <encoded>, value: <amount> }]
+  ├── feeToken: 0x20c0…0000
+  ├── gas: 50000
+  ├── maxFeePerGas: 1000000000
+  ├── maxPriorityFeePerGas: 1000000
+  ├── validBefore: <timestamp>
+  └── signature: { r, s, yParity }  ← signed by MPC wallet
+```
+
+---
+
+## Integration Examples
+
+### Node.js (with mppx)
+
+```javascript
+import { Mppx, tempo } from 'mppx/client';
+import { createDynamicTempoAccount } from './dynamicTempoAccount.js';
+
+// 1. Create the Tempo-compatible signer (step 4)
+const account = createDynamicTempoAccount({
+  client: dynamicClient,        // authenticated DynamicEvmWalletClient
+  walletMetadata: walletMeta,   // from createWalletAccount
+  password: process.env.DYNAMIC_WALLET_PASSWORD,
+});
+
+// 2. Create the MPP client (step 5)
+const mppx = Mppx.create({
+  methods: [tempo({ account })],
+  polyfill: false,  // don't wrap globalThis.fetch
+});
+
+// 3. Pay for a 402-protected endpoint
+const response = await mppx.fetch('https://api.example.com/v1/generate', {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ prompt: 'a mountain landscape' }),
+});
+
+// 4. Read the response
+const result = await response.json();
+console.log(result);
+
+// 5. Verify the payment receipt
+const receiptHeader = response.headers.get('Payment-Receipt');
+if (receiptHeader) {
+  console.log('Payment receipt:', receiptHeader);
+}
+```
+
+### Node.js (raw fetch, no mppx)
+
+```javascript
+// 1. First request — get the 402 challenge
+const challenge = await fetch('https://api.example.com/v1/generate', {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ prompt: 'a mountain landscape' }),
+});
+
+if (challenge.status !== 402) {
+  throw new Error(`Expected 402, got ${challenge.status}`);
+}
+
+const paymentInfo = JSON.parse(challenge.headers.get('Payment-Info'));
+console.log('Payment required:', paymentInfo);
+
+// 2. Build and sign the charge transaction
+const chargeTx = {
+  chainId: paymentInfo.chainId,
+  calls: [{
+    to: paymentInfo.feeCollector,
+    data: '0x',
+    value: BigInt(paymentInfo.amount),
+  }],
+  feeToken: paymentInfo.token,
+  gas: 50000n,
+  maxFeePerGas: 1000000000n,
+  maxPriorityFeePerGas: 1000000n,
+  nonce: await getNonce(account.address),
+  validBefore: Math.floor(Date.now() / 1000) + 300,
+};
+
+const signedTx = await account.signTransaction(chargeTx, {
+  serializer: tempoTransactionSerializer,
+});
+
+// 3. Submit to Tempo
+const rpcResponse = await fetch('https://rpc.moderato.tempo.xyz', {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({
+    jsonrpc: '2.0',
+    id: 1,
+    method: 'eth_sendRawTransaction',
+    params: [signedTx],
+  }),
+});
+const { result: txHash } = await rpcResponse.json();
+
+// 4. Retry with the receipt
+const response = await fetch('https://api.example.com/v1/generate', {
+  method: 'POST',
+  headers: {
+    'content-type': 'application/json',
+    'Payment-Receipt': signedTx,
+  },
+  body: JSON.stringify({ prompt: 'a mountain landscape' }),
+});
+
+const result = await response.json();
+console.log('Result:', result);
+```
+
+### Python
+
+```python
+import requests
+import json
+
+# 1. First request — get the 402 challenge
+response = requests.post(
+    'https://api.example.com/v1/generate',
+    json={'prompt': 'a mountain landscape'},
+)
+
+if response.status_code != 402:
+    raise Exception(f'Expected 402, got {response.status_code}')
+
+payment_info = json.loads(response.headers['Payment-Info'])
+print(f'Payment required: {payment_info}')
+
+# 2. Build and sign the charge transaction
+# (Use a Python EVM library like eth-account + web3.py)
+from eth_account import Account
+from eth_account.messages import encode_typed_data
+
+# ... build the Tempo charge transaction ...
+# ... sign with your key ...
+signed_tx = '0x76f86c...'
+
+# 3. Submit to Tempo
+rpc_response = requests.post(
+    'https://rpc.moderato.tempo.xyz',
+    json={
+        'jsonrpc': '2.0',
+        'id': 1,
+        'method': 'eth_sendRawTransaction',
+        'params': [signed_tx],
+    },
+)
+tx_hash = rpc_response.json()['result']
+
+# 4. Retry with the receipt
+response = requests.post(
+    'https://api.example.com/v1/generate',
+    json={'prompt': 'a mountain landscape'},
+    headers={'Payment-Receipt': signed_tx},
+)
+
+result = response.json()
+print(f'Result: {result}')
+```
+
+### cURL
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+API_URL="https://api.example.com/v1/generate"
+TEMPO_RPC="https://rpc.moderato.tempo.xyz"
+
+# 1. Get the 402 challenge
+echo "=== Step 1: Get payment challenge ==="
+CHALLENGE=$(curl -s -i -X POST "$API_URL" \
+  -H "content-type: application/json" \
+  -d '{"prompt":"a mountain landscape"}')
+
+echo "$CHALLENGE"
+
+# Extract Payment-Info header
+PAYMENT_INFO=$(echo "$CHALLENGE" | grep -i "^Payment-Info:" | sed 's/Payment-Info: //i' | tr -d '\r')
+echo "Payment info: $PAYMENT_INFO"
+
+# 2. Build and sign the charge transaction
+# (This step requires a signing library — shown as pseudocode)
+echo "=== Step 2: Sign charge transaction ==="
+SIGNED_TX="0x76f86c..."  # Replace with actual signed transaction
+
+# 3. Submit to Tempo
+echo "=== Step 3: Submit to Tempo ==="
+TX_HASH=$(curl -s -X POST "$TEMPO_RPC" \
+  -H "content-type: application/json" \
+  -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_sendRawTransaction\",\"params\":[\"$SIGNED_TX\"]}" \
+  | jq -r '.result')
+echo "Transaction hash: $TX_HASH"
+
+# 4. Retry with the receipt
+echo "=== Step 4: Retry with payment receipt ==="
+RESULT=$(curl -s -X POST "$API_URL" \
+  -H "content-type: application/json" \
+  -H "Payment-Receipt: $SIGNED_TX" \
+  -d '{"prompt":"a mountain landscape"}')
+
+echo "Result: $RESULT"
+```
+
+---
+
+## Webhook Setup
+
+### Payment Confirmation Webhook
+
+API providers can register a webhook to receive real-time payment notifications.
+
+#### Webhook Payload
+
+```json
+{
+  "event": "payment.settled",
+  "data": {
+    "transactionHash": "0xabc123…",
+    "payer": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+    "amount": "40000",
+    "token": "PathUSD",
+    "endpoint": "/api/v1/generate",
+    "blockNumber": 1234567,
+    "timestamp": "2026-09-30T12:00:00Z"
+  }
+}
+```
+
+#### Webhook Signature
+
+Each webhook is signed with the provider's HMAC key:
+
+```http
+X-Webhook-Signature: sha256=<hmac-sha256(payload, secret)>
+```
+
+#### Verification (Node.js)
+
+```javascript
+import { createHmac, timingSafeEqual } from 'node:crypto';
+
+function verifyWebhook(payload, signature, secret) {
+  const expected = createHmac('sha256', secret)
+    .update(payload)
+    .digest('hex');
+  const actual = signature.replace('sha256=', '');
+  return timingSafeEqual(Buffer.from(expected), Buffer.from(actual));
+}
+```
+
+---
+
+## Testing Payments
+
+### 1. Self-Test (Offline)
+
+```bash
+npm run self-test
+```
+
+Validates all signing and serialization logic without network calls.
+
+### 2. Dry-Run (Local Key)
+
+```bash
+npm run run:dry
+```
+
+Runs steps 3–5 with a local private key. Tests:
+- Faucet funding
+- Balance reading
+- MPP client creation
+- Payment flow (against the demo endpoint)
+
+### 3. Full Integration (Testnet)
+
+```bash
+npm run run
+```
+
+Runs all five steps with real Dynamic MPC signing against the Tempo Moderato testnet.
+
+### 4. Demo Endpoint
+
+The demo endpoint `https://mpp.dev/api/ping/paid` always returns `402` first, then `200` after payment:
+
+```bash
+# Without payment — expect 402
+curl -i https://mpp.dev/api/ping/paid
+
+# With payment — expect 200
+curl -i https://mpp.dev/api/ping/paid \
+  -H "Payment-Receipt: 0x76f86c…"
+```
+
+### 5. Test Stablecoins
+
+The Tempo Moderato faucet mints four test stablecoins:
+
+| Token | Address | Symbol |
+|---|---|---|
+| PathUSD | `0x20c0000000000000000000000000000000000000` | PathUSD |
+| AlphaUSD | `0x20c0000000000000000000000000000000000001` | AlphaUSD |
+| BetaUSD | `0x20c0000000000000000000000000000000000002` | BetaUSD |
+| ThetaUSD | `0x20c0000000000000000000000000000000000003` | ThetaUSD |
+
+Request funds:
+
+```bash
+curl -X POST https://rpc.moderato.tempo.xyz \
+  -H "content-type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tempo_fundAddress",
+    "params": ["0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"]
+  }'
+```
+
+---
+
+## Troubleshooting
+
+### Payment Failures
+
+| Symptom | Cause | Solution |
+|---|---|---|
+| `402` persists after sending receipt | Receipt invalid or expired | Check receipt format; ensure transaction is submitted to Tempo |
+| `payment_insufficient` | Amount too low | Check `Payment-Info` amount; ensure wallet has sufficient balance |
+| `payment_reused` | Receipt already spent | Generate a new transaction; each receipt can only be used once |
+| `payment_expired` | Transaction too old | Submit a new transaction; receipts expire after ~5 minutes |
+| `payment_invalid` | Bad signature | Verify the signing flow; check that the correct serializer was used |
+| Faucet returns no transactions | Rate-limited | Wait 60 seconds and retry; or use `TEMPO_SKIP_FAUCET=true` |
+| `tempo_fundAddress failed` | RPC error | Check `TEMPO_RPC_URL`; verify network connectivity |
+
+### Debugging Tips
+
+1. **Enable Dynamic debug logging:**
+   ```javascript
+   const client = await createDynamicWalletClient({
+     environmentId,
+     apiToken,
+     debug: true,  // Enable verbose logging
+   });
+   ```
+
+2. **Inspect the signing request:**
+   ```javascript
+   // The dry-run client records every sign() call
+   console.log(dynamicClient.requests);
+   ```
+
+3. **Verify the sign payload:**
+   ```javascript
+   const payload = await getTempoSignPayload(transaction);
+   console.log('Sign payload:', payload);
+   // Must equal: keccak256(TxEnvelopeTempo.encodeForSigning(tx))
+   ```
+
+4. **Check Tempo transaction status:**
+   ```bash
+   curl -X POST https://rpc.moderato.tempo.xyz \
+     -H "content-type: application/json" \
+     -d '{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionReceipt","params":["0x…"]}'
+   ```
+
+5. **Verify wallet balances:**
+   ```bash
+   curl -X POST https://rpc.moderato.tempo.xyz \
+     -H "content-type: application/json" \
+     -d '{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x…","latest"]}'
+   ```
+
+### Common Mistakes
+
+1. **Using the wrong serializer** — Tempo transactions must use `viem/tempo`'s serializer, not viem's default. Using the wrong one produces an invalid signing pre-image.
+
+2. **Including a stale signature** — If the input transaction already has a `signature` field, it must be cleared before signing. The adapter handles this via `withoutSenderSignature()`.
+
+3. **Confusing `signMode`** — `'raw'` (default) signs the serialized transaction bytes; `'prehashed'` signs `keccak256(serialized)`. Both produce the same signature, but the bytes sent to Dynamic differ.
+
+4. **Forgetting to submit to Tempo** — Signing a transaction is not enough; it must be submitted to the Tempo sequencer via `eth_sendRawTransaction` before the receipt is valid.
+
+5. **Using `polyfillFetch: true` globally** — This wraps `globalThis.fetch` and can intercept unrelated requests (e.g., faucet calls). Keep it `false` unless you need it.

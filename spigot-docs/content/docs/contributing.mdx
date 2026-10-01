@@ -1,0 +1,359 @@
+---
+title: Contributing
+description: Branching, commit conventions and local checks.
+---
+
+Thank you for your interest in contributing to Spigot! This document describes the development workflow, code style, and testing requirements.
+
+---
+
+## Code Style
+
+### General Principles
+
+- **JavaScript (ESM)** — All source files use `"type": "module"` and `import`/`export` syntax.
+- **No TypeScript** — The project is plain JavaScript with JSDoc annotations for type hints.
+- **Node.js built-ins** — Use `node:` prefix for built-in modules (`node:fs`, `node:path`, `node:crypto`).
+- **Async/await** — Always prefer `async/await` over raw Promises or callbacks.
+- **Explicit error handling** — Throw descriptive errors with `cause` chaining.
+
+### Formatting
+
+```javascript
+// ✅ Good
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+
+export function loadEnv(path = resolve(projectRoot, '.env')) {
+  if (!existsSync(path))
+    return {};
+  const values = parseEnv(readFileSync(path, 'utf8'));
+  for (const [key, value] of Object.entries(values))
+    if (process.env[key] === undefined)
+      process.env[key] = value;
+  return values;
+}
+
+// ❌ Bad
+import {existsSync, readFileSync} from "fs";
+import {dirname, resolve} from "path";
+export function loadEnv(path) {
+  if (!existsSync(path)) return {};
+  const values = parseEnv(readFileSync(path, "utf8"));
+  for (const [key, value] of Object.entries(values)) {
+    if (process.env[key] === undefined) {
+      process.env[key] = value;
+    }
+  }
+  return values;
+}
+```
+
+### Naming Conventions
+
+| Element | Convention | Example |
+|---|---|---|
+| Files | `camelCase.js` | `dynamicWallet.js`, `mppClient.js` |
+| Functions | `camelCase` | `createDynamicWalletClient()` |
+| Constants | `UPPER_SNAKE_CASE` | `TEMPO_MODERATO`, `DEFAULT_WALLET_STORE_PATH` |
+| Classes | `PascalCase` | `DynamicEvmWalletClient` |
+| Private helpers | `camelCase` with JSDoc `@private` | `parseEnv()` |
+| Exported constants | `PascalCase` for objects | `THRESHOLD_SIGNATURE_SCHEMES` |
+
+### JSDoc
+
+All exported functions must have JSDoc comments:
+
+```javascript
+/**
+ * Creates and authenticates a Dynamic server-wallet client for EVM (step 1).
+ *
+ * @param parameters - The parameters object.
+ * @param parameters.environmentId - Dynamic environment ID.
+ * @param parameters.apiToken - Dynamic API token.
+ * @param parameters.baseApiUrl - Optional API URL override.
+ * @param parameters.baseMPCRelayApiUrl - Optional MPC relay URL override.
+ * @param parameters.debug - Enable debug logging.
+ * @param parameters.logger - Optional logger instance.
+ * @returns The authenticated client.
+ * @throws {Error} If environmentId or apiToken is missing.
+ */
+export async function createDynamicWalletClient(parameters) {
+  // ...
+}
+```
+
+### Import Order
+
+```javascript
+// 1. Node.js built-ins
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+
+// 2. External packages
+import { createClient, http, publicActions } from 'viem';
+import { Mppx, tempo } from 'mppx/client';
+
+// 3. Local modules
+import { TEMPO_MODERATO } from './config.js';
+import { createDynamicTempoAccount } from './dynamicTempoAccount.js';
+```
+
+---
+
+## Pull Request Process
+
+### 1. Branch Naming
+
+| Prefix | Purpose | Example |
+|---|---|---|
+| `feat/` | New feature | `feat/add-websocket-support` |
+| `fix/` | Bug fix | `fix/receipt-verification-race` |
+| `docs/` | Documentation | `docs/api-reference-update` |
+| `refactor/` | Code refactoring | `refactor/split-config-module` |
+| `test/` | Test additions | `test/add-faucet-integration-test` |
+| `chore/` | Maintenance | `chore/update-viem-version` |
+
+### 2. Commit Messages
+
+Follow [Conventional Commits](https://www.conventionalcommits.org/):
+
+```
+feat: add WebSocket event streaming for payment notifications
+fix: clear stale signature before signing Tempo transactions
+docs: add MPP protocol specification
+test: add fee-payer (0x78) envelope test case
+refactor: extract Tempo serializer into standalone module
+```
+
+### 3. PR Checklist
+
+Before submitting a PR, ensure:
+
+- [ ] `npm run self-test` passes
+- [ ] `npm run run:dry` passes (if applicable)
+- [ ] New exports have JSDoc comments
+- [ ] No `console.log` statements left in production code (use the `logger` pattern)
+- [ ] No hardcoded secrets or credentials
+- [ ] Error messages are descriptive and actionable
+- [ ] Code follows the style guide above
+
+### 4. Review Process
+
+1. **Automated checks** — CI runs the self-test and dry-run
+2. **Code review** — At least one maintainer approves
+3. **Integration test** — Maintainer runs `npm run run` on testnet
+4. **Merge** — Squash and merge with a descriptive commit message
+
+---
+
+## Development Workflow
+
+### Setting Up
+
+```bash
+# Clone and install
+git clone https://github.com/your-org/spigot.git
+cd spigot
+npm install
+
+# Create your environment file
+cp .env.example .env
+# Edit .env with your Dynamic credentials (or leave blank for dry-run)
+```
+
+### Running Tests
+
+```bash
+# Offline self-test (no credentials needed)
+npm run self-test
+
+# Dry-run with local key (any platform)
+npm run run:dry
+
+# Full integration test (Linux/macOS only)
+npm run run
+```
+
+### Development Cycle
+
+1. **Create a branch** — `git checkout -b feat/my-feature`
+2. **Make changes** — Edit source files in `src/tempo/`
+3. **Test locally** — `npm run self-test && npm run run:dry`
+4. **Commit** — `git commit -m "feat: add my feature"`
+5. **Push** — `git push origin feat/my-feature`
+6. **Open PR** — Fill out the PR template
+
+### Debugging
+
+#### Enable Dynamic SDK Debug Logging
+
+```javascript
+const client = await createDynamicWalletClient({
+  environmentId,
+  apiToken,
+  debug: true,  // Verbose SDK logging
+  logger: {
+    debug: (msg, data) => console.log('[debug]', msg, data),
+    info: (msg, data) => console.log('[info]', msg, data),
+    warn: (msg, data) => console.warn('[warn]', msg, data),
+    error: (msg, data) => console.error('[error]', msg, data),
+  },
+});
+```
+
+#### Inspect Signing Requests
+
+The dry-run client records every `sign()` call:
+
+```javascript
+const client = createLocalKeyDynamicClient(account);
+// ... perform signing ...
+console.log(client.requests);
+// [
+//   {
+//     accountAddress: '0xf39F…',
+//     chainName: 'EVM',
+//     walletOperation: 'SIGN_TRANSACTION',
+//     message: Uint8Array(…),
+//     context: { evmTransaction: { … } }
+//   }
+// ]
+```
+
+#### Verify Sign Payload
+
+```javascript
+import { Transaction } from 'viem/tempo';
+import { getTempoSignPayload } from './dynamicTempoAccount.js';
+
+const payload = await getTempoSignPayload(transaction);
+const expected = Transaction.z_TxEnvelopeTempo.getSignPayload(transaction);
+console.assert(payload === expected, 'Sign payload mismatch!');
+```
+
+---
+
+## Testing Requirements
+
+### Test Coverage
+
+| Area | Required Tests | Command |
+|---|---|---|
+| Tempo serialization | Type `0x76` envelope, sign payload matches `TxEnvelopeTempo.getSignPayload` | `npm run self-test` |
+| Fee-payer transactions | Type `0x78` envelope, null fee-payer marker | `npm run self-test` |
+| EIP-1559 fallback | Standard `0x02` envelope, address recovery | `npm run self-test` |
+| Message signing | `signMessage` recovers to account address | `npm run self-test` |
+| Typed data signing | `signTypedData` recovers to account address | `npm run self-test` |
+| MPP client | `Mppx.create()` accepts the account | `npm run self-test` |
+| Faucet funding | `tempo_fundAddress` mints tokens | `npm run run:dry` |
+| Balance reading | TIP-20 balances returned | `npm run run:dry` |
+| Full payment flow | 402 → sign → receipt → 200 | `npm run run` |
+
+### Writing Tests
+
+Tests use Node.js built-in `assert` module (no external test framework):
+
+```javascript
+import assert from 'node:assert/strict';
+
+// Test: Tempo transaction serializes with type 0x76
+const signedTx = await account.signTransaction(tempoTransaction, {
+  serializer: tempoTransactionSerializer,
+});
+assert.ok(signedTx.startsWith('0x76'), `expected Tempo envelope, got ${signedTx.slice(0, 4)}`);
+
+// Test: Sign payload matches Tempo's expected pre-image
+const payload = await getTempoSignPayload(tempoTransaction);
+assert.equal(payload, Transaction.z_TxEnvelopeTempo.getSignPayload(tempoTransaction));
+```
+
+### Test Principles
+
+1. **No network calls in unit tests** — Use the dry-run client and local keys.
+2. **Deterministic** — Tests must produce the same result every run.
+3. **Fast** — Self-test completes in < 5 seconds.
+4. **Descriptive assertions** — Error messages explain what failed and why.
+5. **Test the invariant, not the implementation** — Assert that the sign payload equals `TxEnvelopeTempo.getSignPayload`, not that it equals a hardcoded hex string.
+
+---
+
+## Project Structure
+
+```
+src/tempo/
+├── config.js              # Environment configuration, .env parsing
+├── run.js                 # Five-step walkthrough (main entry point)
+├── dynamicWallet.js       # Steps 1-2: Dynamic client + wallet creation
+├── dynamicTempoAccount.js # Step 4: Tempo-compatible viem account adapter
+├── faucet.js              # Step 3: Tempo Moderato faucet funding
+├── mppClient.js           # Step 5: MPP payment client
+├── dryRunClient.js        # Local-key stand-in for testing
+└── selfTest.js            # Offline validation suite
+```
+
+### Module Dependencies
+
+```
+config.js          ← (no dependencies)
+  ↑
+dynamicWallet.js   ← config.js, @dynamic-labs-wallet/node-evm
+  ↑
+dynamicTempoAccount.js ← viem, viem/tempo (no Dynamic SDK import)
+  ↑
+mppClient.js       ← mppx, config.js
+  ↑
+run.js             ← all of the above
+```
+
+> **Key design decision:** `dynamicTempoAccount.js` does NOT import `@dynamic-labs-wallet/node-evm`. The Dynamic client is injected, and the two formatting helpers are inlined as byte-identical mirrors. This keeps the module usable on Windows and in any environment without the Neon binaries.
+
+---
+
+## Security Guidelines
+
+### Never Commit Secrets
+
+- `.env` files
+- Private keys
+- API tokens
+- Wallet passwords
+- Key shares
+
+### Secret Management in Code
+
+```javascript
+// ✅ Good — read from environment
+const password = process.env.DYNAMIC_WALLET_PASSWORD;
+
+// ❌ Bad — hardcoded
+const password = 'my-secret-password';
+```
+
+### Error Messages
+
+```javascript
+// ✅ Good — descriptive, actionable
+throw new Error(
+  `Missing configuration: ${missing.join(', ')}. ` +
+  'Copy .env.example to .env and fill in your Dynamic values.'
+);
+
+// ❌ Bad — vague, unhelpful
+throw new Error('config error');
+```
+
+### Dependency Security
+
+- Pin exact versions in `package.json` where possible
+- Run `npm audit` before submitting PRs
+- Do not add dependencies without maintainer approval
+
+---
+
+## Getting Help
+
+- **Documentation** — Check the files in `docs/` first
+- **Self-test** — Run `npm run self-test` to validate your environment
+- **Dry-run** — Run `npm run run:dry` to test the payment flow
+- **Issues** — Open a GitHub issue with the `question` label

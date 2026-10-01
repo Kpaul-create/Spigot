@@ -1,0 +1,205 @@
+---
+title: Spigot
+description: Metered stablecoin tap for AI agents - overview and project layout.
+---
+
+> Metered stablecoin tap for AI agents — a 402-paid API gateway backed by the Tempo chain and Dynamic MPC wallets.
+
+## Project Overview
+
+Spigot is a pay-per-call API gateway that lets developers monetize AI agent endpoints using stablecoin micropayments. It combines three core technologies:
+
+- **Tempo** — a high-throughput L2 blockchain with native account abstraction and gas sponsorship
+- **Dynamic** — an MPC (Multi-Party Computation) wallet infrastructure for keyless, threshold-signed transactions
+- **MPP (Micropayment Protocol)** — a 402 Payment Required–based protocol for per-request settlement
+
+The system enables API providers to charge fractions of a cent per call, with automatic payment receipt verification and on-chain settlement.
+
+## Architecture Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        API CONSUMER (AI Agent)                       │
+│                                                                     │
+│   fetch('https://api.example.com/v1/generate', { ... })            │
+└──────────────────────────────┬──────────────────────────────────────┘
+                               │ HTTP request
+                               ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                      API PROVIDER (Your Server)                     │
+│                                                                     │
+│   ┌─────────────┐    ┌──────────────┐    ┌─────────────────────┐   │
+│   │   Route     │───▶│  MPP Guard   │───▶│  Business Logic     │   │
+│   │   Handler   │    │  Middleware  │    │  (LLM, compute…)    │   │
+│   └─────────────┘    └──────┬───────┘    └─────────────────────┘   │
+│                              │                                      │
+│                              │ 402 Payment Required                   │
+│                              │ + Payment-Required header             │
+│                              ▼                                      │
+│   ┌─────────────────────────────────────────────────────────────┐   │
+│   │  MPP Client (mppx)                                          │   │
+│   │  • Detects 402 challenge                                    │   │
+│   │  • Signs Tempo charge credential with MPC wallet            │   │
+│   │  • Retries request with Payment-Receipt header               │   │
+│   └──────────────────────────┬──────────────────────────────────┘   │
+└──────────────────────────────┼──────────────────────────────────────┘
+                               │ signed transaction
+                               ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                        TEMPO L2 (Moderato Testnet)                  │
+│                                                                     │
+│   ┌──────────────┐  ┌──────────────┐  ┌──────────────────────────┐  │
+│   │  Sequencer   │  │  Fee Engine  │  │  Stablecoin Ledger       │  │
+│   │  (0x76 txs)  │  │  (TIP-20)    │  │  PathUSD / AlphaUSD /    │  │
+│   │              │  │              │  │  BetaUSD / ThetaUSD      │  │
+│   └──────────────┘  └──────────────┘  └──────────────────────────┘  │
+│                                                                     │
+│   Chain ID: 42431    RPC: https://rpc.moderato.tempo.xyz            │
+└─────────────────────────────────────────────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                     DYNAMIC MPC WALLET SERVICE                      │
+│                                                                     │
+│   ┌──────────────────┐  ┌──────────────────┐  ┌─────────────────┐  │
+│   │  Client Share    │  │  Server Share    │  │  Key Ceremony   │  │
+│   │  Service (backup)│  │  (Dynamic-held)  │  │  (TWO_OF_TWO)   │  │
+│   └──────────────────┘  └──────────────────┘  └─────────────────┘  │
+│                                                                     │
+│   • API Token → JWT authentication                                  │
+│   • Threshold ECDSA signatures (2-of-2)                             │
+│   • Client share encrypted with password, recoverable on demand      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+## Quick Start
+
+### Prerequisites
+
+- **Node.js** ≥ 20 (Linux or macOS for full MPC support)
+- **npm** ≥ 10
+- A [Dynamic](https://www.dynamic.xyz/) account with an environment ID and API token
+
+### Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/your-org/spigot.git
+cd spigot
+
+# Install dependencies
+npm install
+
+# Configure environment
+cp .env.example .env
+# Edit .env with your Dynamic credentials
+```
+
+### Run the Walkthrough
+
+```bash
+# Full five-step integration (Linux/macOS only)
+npm run run
+
+# Dry-run with local key (any platform)
+npm run run:dry
+
+# Offline self-test (no credentials needed)
+npm run self-test
+```
+
+### Verify It Works
+
+```bash
+$ npm run self-test
+selfTest: all checks passed
+  wallet address  : 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
+  tempo tx (0x76) : 0x76f86c808252089420c00000000000000000000000000000000000008084deadbe…
+  eip-1559 tx     : 0x02f86c808252089470997970c51812dc3a010c7d01b50e0d17dc79c8…
+  signMessage sig : 0x1c2b3c…
+  signTypedData   : 0x4d5e6f…
+```
+
+## Documentation Index
+
+| Document | Description |
+|---|---|
+| [API Reference](./API.md) | REST endpoints, authentication, error codes, WebSocket events |
+| [Architecture](./ARCHITECTURE.md) | System design, data flow, security model, scalability |
+| [Setup & Deployment](./SETUP.md) | Installation, environment variables, Docker, cloud deployment |
+| [Payments](./PAYMENTS.md) | 402 payment flow, integration examples, webhooks, testing |
+| [Contributing](./CONTRIBUTING.md) | Code style, PR process, development workflow |
+
+## Feature List
+
+### Core Features
+
+- **402 Payment Required Flow** — Automatic detection and settlement of payment challenges
+- **MPC Wallet Integration** — Threshold ECDSA signatures via Dynamic's 2-of-2 scheme
+- **Tempo Chain Support** — Custom transaction serialization (type `0x76`, fee-payer `0x78`)
+- **Stablecoin Settlement** — PathUSD, AlphaUSD, BetaUSD, ThetaUSD (TIP-20 tokens)
+- **Faucet Integration** — One-command testnet funding via `tempo_fundAddress`
+- **Dry-Run Mode** — Full payment flow testing without Dynamic credentials
+- **Self-Test Suite** — Offline validation of all signing and serialization logic
+
+### Security Features
+
+- **Key Shares Never Leave Dynamic** — Client share backed up encrypted; server share held by Dynamic
+- **Password-Protected Recovery** — Client share recoverable with wallet password
+- **Transaction Policy Engine** — Dynamic evaluates every signing request against configurable policies
+- **No Private Keys in Memory** — MPC ensures no single party ever holds the full key
+
+### Developer Experience
+
+- **Zero-Config Faucet** — Automatic testnet token minting on first run
+- **Wallet Persistence** — Metadata stored locally; key shares recovered on demand
+- **CLI Flags** — Override any config value from the command line
+- **Comprehensive Logging** — Step-by-step progress with Dynamic SDK integration
+
+## Tech Stack
+
+| Layer | Technology | Version |
+|---|---|---|
+| Runtime | Node.js | ≥ 20 |
+| Language | JavaScript (ESM) | — |
+| Blockchain | Tempo (Moderato Testnet) | Chain ID 42431 |
+| Wallet | Dynamic MPC | `@dynamic-labs-wallet/node-evm` ^1.1.16 |
+| EVM Interaction | viem | ^2.56.8 |
+| Payment Protocol | MPP (mppx) | ^0.11.0 |
+| 3D Rendering | Three.js | ^0.186.0 |
+| Package Manager | npm | ≥ 10 |
+
+## Project Structure
+
+```
+spigot/
+├── docs/                    # Documentation (this directory)
+│   ├── README.md            # This file
+│   ├── API.md               # API reference
+│   ├── ARCHITECTURE.md      # System architecture
+│   ├── SETUP.md             # Setup & deployment guide
+│   ├── PAYMENTS.md          # Payment integration guide
+│   └── CONTRIBUTING.md      # Contributing guide
+├── src/
+│   ├── tempo/               # CLI integration scripts
+│   │   ├── config.js        # Environment configuration
+│   │   ├── run.js           # Five-step walkthrough
+│   │   ├── dynamicWallet.js # Dynamic wallet client (steps 1-2)
+│   │   ├── dynamicTempoAccount.js  # Tempo signer adapter (step 4)
+│   │   ├── faucet.js        # Tempo faucet funding (step 3)
+│   │   ├── mppClient.js     # MPP payment client (step 5)
+│   │   ├── dryRunClient.js  # Local-key stand-in for testing
+│   │   └── selfTest.js      # Offline validation suite
+│   └── ui/                  # Landing page
+│       ├── index.html       # Standalone HTML page
+│       ├── app.js           # Page logic
+│       ├── scene.js         # Three.js hero scene
+│       └── style.css        # Styles
+├── .env.example             # Environment template
+├── package.json
+└── README.md
+```
+
+## License
+
+No license yet — treat this as private until one is added.

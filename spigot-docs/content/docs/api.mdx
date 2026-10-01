@@ -1,0 +1,315 @@
+---
+title: API Reference
+description: Every route the Spigot gateway exposes, including the 402 payment handshake.
+---
+
+## Authentication & Payment Flow
+
+Spigot uses the **MPP (Micropayment Protocol)** built on HTTP `402 Payment Required`. There is no API key or bearer token — payment itself is the credential.
+
+### The 402 Flow
+
+```
+Client                                    API Provider
+  │                                             │
+  │  ────────── GET /v1/endpoint ──────────▶   │
+  │                                             │
+  │  ◀────── 402 Payment Required ──────────    │
+  │       Payment-Required: tempo               │
+  │       Payment-Info: {"amount": 1000,        │
+  │         "token": "0x20c0…0000",             │
+  │         "chainId": 42431}                   │
+  │                                             │
+  │  [Client signs charge credential with       │
+  │   MPC wallet → Tempo transaction]           │
+  │                                             │
+  │  ─── GET /v1/endpoint ──────────────────▶  │
+  │       Payment-Receipt: 0x76f86c…            │
+  │                                             │
+  │  ◀────── 200 OK ────────────────────────    │
+  │       {"result": "..."}                     │
+  │                                             │
+```
+
+### Step-by-step
+
+1. **Request** — Client sends a normal HTTP request to a protected endpoint.
+2. **Challenge** — Server responds `402` with a `Payment-Required` header naming the payment method (`tempo`) and a `Payment-Info` header with the charge details (amount, token, chain ID).
+3. **Sign** — Client's MPP wrapper intercepts the 402, serializes a Tempo charge transaction, signs it with the Dynamic MPC wallet, and submits it to Tempo.
+4. **Retry** — Client retries the original request with a `Payment-Receipt` header containing the signed transaction envelope.
+5. **Serve** — Server verifies the receipt on-chain (or via sequencer) and serves the response.
+
+---
+
+## REST Endpoints
+
+### `GET /api/ping/paid`
+
+The demo endpoint that answers with `402 Payment Required`. Used by the walkthrough to validate the full payment flow.
+
+#### Request
+
+```http
+GET /api/ping/paid HTTP/1.1
+Host: mpp.dev
+```
+
+#### Response — 402 (unpaid)
+
+```http
+HTTP/1.1 402 Payment Required
+Payment-Required: tempo
+Payment-Info: {"amount":1000,"token":"0x20c0000000000000000000000000000000000000","chainId":42431}
+Content-Type: application/json
+
+{"error":"payment_required","message":"This endpoint requires payment"}
+```
+
+#### Request (with payment)
+
+```http
+GET /api/ping/paid HTTP/1.1
+Host: mpp.dev
+Payment-Receipt: 0x76f86c808252089420c00000000000000000000000000000000000008084deadbeef808080
+```
+
+#### Response — 200 (paid)
+
+```http
+HTTP/1.1 200 OK
+Payment-Receipt: 0x76f86c808252089420c00000000000000000000000000000000000008084deadbeef808080
+Content-Type: application/json
+
+{"pong":true,"paid":true}
+```
+
+---
+
+### `POST /api/v1/generate`
+
+Example protected AI endpoint (image generation). Charges 0.04 USD equivalent per call.
+
+#### Request
+
+```http
+POST /api/v1/generate HTTP/1.1
+Host: api.example.com
+Content-Type: application/json
+
+{"prompt":"a serene mountain landscape","width":1024,"height":1024}
+```
+
+#### Response — 402 (unpaid)
+
+```json
+{
+  "error": "payment_required",
+  "message": "This endpoint requires payment",
+  "payment": {
+    "method": "tempo",
+    "amount": "40000",
+    "token": "0x20c0000000000000000000000000000000000000",
+    "chainId": 42431,
+    "currency": "PathUSD"
+  }
+}
+```
+
+#### Response — 200 (paid)
+
+```json
+{
+  "result": {
+    "image_url": "https://cdn.example.com/images/abc123.png",
+    "prompt": "a serene mountain landscape",
+    "seed": 42
+  },
+  "payment": {
+    "receipt": "0x76f86c…",
+    "amount": "40000",
+    "token": "PathUSD"
+  }
+}
+```
+
+---
+
+### `GET /api/v1/balance`
+
+Query the spending balance for a wallet address.
+
+#### Request
+
+```http
+GET /api/v1/balance?address=0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266 HTTP/1.1
+Host: api.example.com
+```
+
+#### Response — 200
+
+```json
+{
+  "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+  "balances": [
+    {"token": "PathUSD", "raw": "100000000", "formatted": "100.0", "decimals": 6},
+    {"token": "AlphaUSD", "raw": "50000000", "formatted": "50.0", "decimals": 6},
+    {"token": "BetaUSD", "raw": "0", "formatted": "0.0", "decimals": 6},
+    {"token": "ThetaUSD", "raw": "25000000", "formatted": "25.0", "decimals": 6}
+  ]
+}
+```
+
+---
+
+### `GET /api/v1/receipt/:txHash`
+
+Verify a payment receipt on-chain.
+
+#### Request
+
+```http
+GET /api/v1/receipt/0xabc123… HTTP/1.1
+Host: api.example.com
+```
+
+#### Response — 200
+
+```json
+{
+  "valid": true,
+  "transactionHash": "0xabc123…",
+  "blockNumber": 1234567,
+  "payer": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+  "amount": "40000",
+  "token": "0x20c0000000000000000000000000000000000000",
+  "endpoint": "/api/v1/generate",
+  "timestamp": "2026-09-30T12:00:00Z"
+}
+```
+
+---
+
+## Error Codes
+
+| HTTP Status | Error Code | Description |
+|---|---|---|
+| `400` | `invalid_request` | Malformed request body or parameters |
+| `401` | `unauthorized` | Missing or invalid authentication (for non-payment endpoints) |
+| `402` | `payment_required` | Payment has not been provided |
+| `402` | `payment_insufficient` | Payment amount is less than required |
+| `402` | `payment_expired` | Payment receipt has expired (transaction too old) |
+| `402` | `payment_invalid` | Receipt signature or format is invalid |
+| `402` | `payment_reused` | Receipt has already been spent (replay protection) |
+| `403` | `forbidden` | Wallet is blacklisted or policy violation |
+| `404` | `not_found` | Endpoint does not exist |
+| `429` | `rate_limited` | Too many requests; see Rate Limiting below |
+| `500` | `internal_error` | Unexpected server error |
+| `502` | `bad_gateway` | Upstream provider (LLM, compute) unavailable |
+| `503` | `service_unavailable` | Tempo RPC or Dynamic MPC service unavailable |
+
+### Error Response Format
+
+All errors follow RFC 7807 (Problem Details):
+
+```json
+{
+  "type": "https://api.example.com/errors/payment_required",
+  "title": "Payment Required",
+  "status": 402,
+  "detail": "This endpoint requires payment of 40000 PathUSD",
+  "instance": "/api/v1/generate",
+  "payment": {
+    "method": "tempo",
+    "amount": "40000",
+    "token": "0x20c0000000000000000000000000000000000000",
+    "chainId": 42431
+  }
+}
+```
+
+---
+
+## Rate Limiting
+
+Rate limits are enforced per wallet address and per endpoint.
+
+| Tier | Requests/min | Burst | Applies to |
+|---|---|---|---|
+| Default | 60 | 10 | All authenticated (paid) requests |
+| Premium | 600 | 100 | Whitelisted addresses |
+| Faucet | 10 | 2 | `tempo_fundAddress` calls |
+
+### Rate Limit Headers
+
+```http
+X-RateLimit-Limit: 60
+X-RateLimit-Remaining: 58
+X-RateLimit-Reset: 1709212800
+```
+
+### 429 Response
+
+```json
+{
+  "type": "https://api.example.com/errors/rate_limited",
+  "title": "Too Many Requests",
+  "status": 429,
+  "detail": "Rate limit exceeded. Try again in 30 seconds.",
+  "retry_after": 30
+}
+```
+
+---
+
+## WebSocket Events (Future)
+
+> **Status:** Planned for v2.0. Not yet implemented.
+
+The WebSocket channel will push real-time payment and settlement events to connected clients.
+
+### Connection
+
+```
+wss://api.example.com/v1/ws
+```
+
+### Authentication
+
+Send a signed connection message within 10 seconds of connecting:
+
+```json
+{
+  "type": "auth",
+  "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+  "signature": "0x…",
+  "timestamp": 1709212800
+}
+```
+
+### Events
+
+| Event | Direction | Description |
+|---|---|---|
+| `payment.received` | Server → Client | A payment was detected on-chain |
+| `payment.settled` | Server → Client | Payment confirmed and settled |
+| `payment.failed` | Server → Client | Payment transaction reverted |
+| `balance.updated` | Server → Client | Wallet balance changed |
+| `subscription.started` | Client → Server | Subscribe to an address's events |
+| `subscription.ended` | Client → Server | Unsubscribe from events |
+
+### Event Payload Example
+
+```json
+{
+  "event": "payment.settled",
+  "data": {
+    "transactionHash": "0xabc123…",
+    "payer": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+    "amount": "40000",
+    "token": "PathUSD",
+    "endpoint": "/api/v1/generate",
+    "blockNumber": 1234567,
+    "timestamp": "2026-09-30T12:00:00Z"
+  }
+}
+```

@@ -1,0 +1,17 @@
+@import 'tailwindcss';
+@import 'fumadocs-ui/css/neutral.css';
+@import 'fumadocs-ui/css/preset.css';
+
+/* The hero scene adds `.ready` to its canvas once three.js has rendered the
+   first frame, which fades it in. Without this variant `ready:opacity-100`
+   is never generated and the canvas stays stuck at opacity-0. */
+@custom-variant ready (&:where(.ready, .ready *));
+
+html {
+  scrollbar-gutter: stable;
+}
+
+html > body[data-scroll-locked] {
+  margin-right: 0px !important;
+  --removed-body-scroll-bar-size: 0px !important;
+}

@@ -1,0 +1,307 @@
+---
+title: Architecture
+description: How Tempo, Dynamic MPC wallets and the MPP client fit together.
+---
+
+## Design Overview
+
+Spigot is a **pay-per-call API gateway** that settles micropayments on the Tempo L2 blockchain using Dynamic MPC wallets. The system is designed around a single principle: **payment is the credential** — there are no API keys, bearer tokens, or session cookies.
+
+### Design Goals
+
+1. **Frictionless micropayments** — Sub-cent per-call charges with automatic settlement
+2. **Keyless security** — MPC wallets eliminate single-point-of-failure key storage
+3. **Developer-first** — A single `fetch` wrapper handles the entire payment flow
+4. **Chain-agnostic signer** — One adapter supports Tempo, EIP-1559, and legacy transactions
+5. **Testable everywhere** — Dry-run mode and self-test suite work without credentials
+
+---
+
+## Component Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                           CLIENT LAYER                                   │
+│                                                                         │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────────────┐  │
+│  │  AI Agent    │  │  Web App     │  │  CLI Tooling                 │  │
+│  │  (fetch)     │  │  (browser)   │  │  (npm run run)               │  │
+│  └──────┬───────┘  └──────┬───────┘  └──────────────┬───────────────┘  │
+│         │                 │                         │                   │
+│         └─────────────────┼─────────────────────────┘                   │
+│                           │                                             │
+│                    ┌──────▼───────┐                                     │
+│                    │  mppx.fetch  │  ← Payment-aware fetch wrapper      │
+│                    │  (MPP Client)│                                     │
+│                    └──────┬───────┘                                     │
+│                           │                                             │
+│              ┌────────────┼────────────┐                                │
+│              │            │            │                                │
+│         ┌────▼───┐  ┌────▼───┐  ┌────▼────────┐                        │
+│         │ Tempo  │  │Dynamic │  │  Faucet     │                        │
+│         │ Signer │  │  MPC   │  │  Client     │                        │
+│         └────────┘  └────────┘  └─────────────┘                        │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                          SERVICE LAYER                                   │
+│                                                                         │
+│  ┌──────────────────────────────────────────────────────────────────┐   │
+│  │  API Gateway (Your Server)                                       │   │
+│  │                                                                  │   │
+│  │  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌──────────┐  │   │
+│  │  │  Route     │  │  MPP Guard │  │  Receipt   │  │  Rate    │  │   │
+│  │  │  Matcher   │  │  Middleware│  │  Verifier  │  │  Limiter │  │   │
+│  │  └────────────┘  └────────────┘  └────────────┘  └──────────┘  │   │
+│  │                                                                  │   │
+│  │  ┌────────────┐  ┌────────────┐  ┌────────────┐               │   │
+│  │  │  Billing   │  │  Endpoint  │  │  Analytics │               │   │
+│  │  │  Engine    │  │  Registry  │  │  Tracker   │               │   │
+│  │  └────────────┘  └────────────┘  └────────────┘               │   │
+│  └──────────────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         BLOCKCHAIN LAYER                                 │
+│                                                                         │
+│  ┌──────────────────────────────────────────────────────────────────┐   │
+│  │  Tempo L2 (Moderato Testnet, Chain ID 42431)                     │   │
+│  │                                                                  │   │
+│  │  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌──────────┐  │   │
+│  │  │ Sequencer  │  │ Fee Engine │  │  TIP-20    │  │  MPP     │  │   │
+│  │  │            │  │ (gasless)  │  │  Tokens    │  │  Contract│  │   │
+│  │  └────────────┘  └────────────┘  └────────────┘  └──────────┘  │   │
+│  └──────────────────────────────────────────────────────────────────┘   │
+│                                                                         │
+│  ┌──────────────────────────────────────────────────────────────────┐   │
+│  │  Dynamic MPC Wallet Service                                      │   │
+│  │                                                                  │   │
+│  │  ┌────────────┐  ┌────────────┐  ┌────────────┐               │   │
+│  │  │ Client     │  │ Server     │  │  Key       │               │   │
+│  │  │ Share Svc  │  │ Share      │  │  Ceremony  │               │   │
+│  │  └────────────┘  └────────────┘  └────────────┘               │   │
+│  └──────────────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Data Flow
+
+### Payment Settlement Flow
+
+```
+1. Client                    API Gateway              Tempo Chain
+   │                             │                         │
+   │  GET /v1/endpoint           │                         │
+   │ ──────────────────────────▶ │                         │
+   │                             │                         │
+   │  402 Payment Required        │                         │
+   │  Payment-Required: tempo    │                         │
+   │  Payment-Info: {amount,...} │                         │
+   │ ◀────────────────────────── │                         │
+   │                             │                         │
+   │  [mppx intercepts, signs    │                         │
+   │   charge with MPC wallet]   │                         │
+   │                             │                         │
+   │  POST /tempo/rpc            │                         │
+   │  eth_sendRawTransaction     │                         │
+   │ ────────────────────────────┼────────────────────────▶ │
+   │                             │                         │
+   │  200 {txHash}               │                         │
+   │ ◀────────────────────────────┼──────────────────────── │
+   │                             │                         │
+   │  GET /v1/endpoint           │                         │
+   │  Payment-Receipt: 0x76f8…   │                         │
+   │ ──────────────────────────▶ │                         │
+   │                             │  verify receipt          │
+   │                             │ ──────────────────────▶ │
+   │                             │                         │
+   │                             │  valid ✓                │
+   │                             │ ◀────────────────────── │
+   │                             │                         │
+   │  200 OK {result}            │                         │
+   │ ◀────────────────────────── │                         │
+```
+
+### Wallet Creation Flow
+
+```
+1. App                     Dynamic API              MPC Network
+   │                             │                         │
+   │  POST /authenticate         │                         │
+   │  {environmentId, apiToken}  │                         │
+   │ ──────────────────────────▶ │                         │
+   │                             │                         │
+   │  200 {jwt, sessionKey}      │                         │
+   │ ◀────────────────────────── │                         │
+   │                             │                         │
+   │  POST /wallet/create        │                         │
+   │  {thresholdScheme,          │                         │
+   │   password, backup}         │                         │
+   │ ──────────────────────────▶ │                         │
+   │                             │  keygen ceremony        │
+   │                             │ ──────────────────────▶ │
+   │                             │                         │
+   │                             │  {clientShare,          │
+   │                             │   serverShare,          │
+   │                             │   publicKey}            │
+   │                             │ ◀────────────────────── │
+   │                             │                         │
+   │  200 {walletMetadata,       │                         │
+   │   externalServerKeyShares}  │                         │
+   │ ◀────────────────────────── │                         │
+   │                             │                         │
+   │  [encrypt client share      │                         │
+   │   with password, backup     │                         │
+   │   to Dynamic]               │                         │
+```
+
+---
+
+## Security Model
+
+### Threat Model
+
+| Threat | Mitigation |
+|---|---|
+| Private key theft | MPC ensures no single party holds the full key |
+| Replay attacks | Each receipt is bound to a specific endpoint + nonce |
+| Receipt forgery | On-chain signature verification against payer address |
+| Wallet takeover | Client share encrypted with password; server share held by Dynamic |
+| Rate limiting bypass | Per-address tracking with sliding window |
+| Receipt reuse | Receipt registry marks spent transactions |
+| Man-in-the-middle | All communication over TLS; receipts are on-chain verifiable |
+
+### Key Security Properties
+
+1. **No single point of failure** — Dynamic's 2-of-2 threshold scheme means neither the client nor Dynamic can unilaterally sign.
+2. **Password-protected backup** — The client key share is encrypted with a user password before being stored in Dynamic's client share service.
+3. **Policy engine** — Every signing request is evaluated against configurable policies (spending limits, allowed contracts, etc.).
+4. **On-chain verifiability** — Any third party can verify a payment receipt by checking the Tempo transaction signature.
+5. **No key material in logs** — The system never logs private keys, key shares, or passwords.
+
+### Transaction Signing Security
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                  Signing Request Flow                        │
+│                                                             │
+│  1. App calls account.signTransaction(tx)                   │
+│  2. Adapter serializes tx with Tempo serializer (0x76)       │
+│  3. Adapter sends serialized bytes to Dynamic.sign()         │
+│  4. Dynamic evaluates policy (limits, contracts, etc.)      │
+│  5. Dynamic coordinates MPC ceremony (client + server)      │
+│  6. Returns {r, s, v} ECDSA signature                       │
+│  7. Adapter serializes tx with signature                    │
+│  8. Signed tx submitted to Tempo sequencer                 │
+│                                                             │
+│  Key invariant: bytes signed = TxEnvelopeTempo              │
+│                 .encodeForSigning(tx)                       │
+│                 (no sender signature, fee-payer = null)     │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Scalability Considerations
+
+### Horizontal Scaling
+
+| Component | Scaling Strategy |
+|---|---|
+| API Gateway | Stateless; scale behind load balancer |
+| MPP Client | Per-process; no shared state |
+| Receipt Verifier | Cache verified receipts in Redis (TTL = 1 hour) |
+| Rate Limiter | Redis-backed sliding window |
+| Analytics | Async write to message queue (Kafka/SQS) |
+
+### Tempo Chain Throughput
+
+- **Block time:** ~2 seconds
+- **TPS:** 10,000+ (theoretical)
+- **Finality:** Single-block (sequencer-based)
+- **Gas fees:** Sponsored by fee-payer (gasless for end users)
+
+### Dynamic MPC Throughput
+
+- **Key ceremony:** ~2-5 seconds (one-time per wallet)
+- **Signing latency:** ~200-500ms per signature
+- **Concurrent signings:** Limited by Dynamic's relay capacity
+- **Recommended:** Batch signing requests; cache JWT tokens
+
+### Bottlenecks & Mitigations
+
+| Bottleneck | Impact | Mitigation |
+|---|---|---|
+| Dynamic signing latency | 200-500ms per payment | Pre-sign where possible; use session-based receipts |
+| Tempo RPC rate limits | Faucet and balance reads | Cache balances; use batch JSON-RPC calls |
+| Receipt verification | On-chain read per payment | Cache verified receipts; use event-based confirmation |
+| Key ceremony | 2-5s one-time cost | Reuse wallets; persist metadata locally |
+
+---
+
+## Deployment Architecture
+
+### Single-Node Development
+
+```
+┌─────────────────────────────────────┐
+│           Developer Machine         │
+│                                     │
+│  ┌──────────┐  ┌──────────────────┐ │
+│  │  CLI     │  │  API Server      │ │
+│  │  (run.js)│  │  (Express/Fastify)│ │
+│  └──────────┘  └──────────────────┘ │
+│                                     │
+│  ┌────────────────────────────────┐ │
+│  │  Tempo RPC (remote)            │ │
+│  │  Dynamic API (remote)          │ │
+│  └────────────────────────────────┘ │
+└─────────────────────────────────────┘
+```
+
+### Production Multi-Node
+
+```
+                          ┌──────────────┐
+                          │   CDN / WAF  │
+                          └──────┬───────┘
+                                 │
+                    ┌────────────▼────────────┐
+                    │    Load Balancer        │
+                    │    (HTTPS termination)  │
+                    └────────────┬────────────┘
+                                 │
+              ┌──────────────────┼──────────────────┐
+              │                  │                  │
+     ┌────────▼───────┐ ┌───────▼────────┐ ┌──────▼─────────┐
+     │  API Server 1  │ │  API Server 2  │ │  API Server N  │
+     │  (stateless)   │ │  (stateless)  │ │  (stateless)   │
+     └────────┬───────┘ └───────┬────────┘ └──────┬─────────┘
+              │                  │                  │
+              └──────────────────┼──────────────────┘
+                                 │
+                    ┌────────────▼────────────┐
+                    │    Redis Cluster        │
+                    │  (receipt cache,        │
+                    │   rate limits, sessions)│
+                    └────────────┬────────────┘
+                                 │
+              ┌──────────────────┼──────────────────┐
+              │                  │                  │
+     ┌────────▼───────┐ ┌───────▼────────┐ ┌──────▼─────────┐
+     │  Tempo RPC     │ │  Dynamic API   │ │  Monitoring    │
+     │  (remote)      │ │  (remote)      │ │  (Prometheus)  │
+     └────────────────┘ └────────────────┘ └────────────────┘
+```
+
+### Key Production Considerations
+
+1. **JWT caching** — Dynamic API tokens expire; cache and refresh proactively
+2. **Receipt deduplication** — Use Redis to prevent double-spend of receipts
+3. **Health checks** — Monitor Tempo RPC and Dynamic API availability
+4. **Graceful degradation** — If Dynamic is unavailable, queue signing requests
+5. **Secrets management** — Use a vault (AWS Secrets Manager, Doppler) for API tokens and passwords

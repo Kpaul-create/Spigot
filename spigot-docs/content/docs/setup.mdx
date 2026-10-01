@@ -1,0 +1,420 @@
+---
+title: Setup
+description: Get the Next.js app and the Tempo CLI running locally.
+---
+
+## Prerequisites
+
+### Required
+
+| Requirement | Version | Notes |
+|---|---|---|
+| Node.js | ≥ 20 | Required for ESM and native fetch |
+| npm | ≥ 10 | Bundled with Node.js |
+| Linux or macOS | — | Required for Dynamic MPC (Neon binaries) |
+
+### Optional
+
+| Requirement | Purpose |
+|---|---|
+| Docker | Containerized deployment |
+| Redis | Receipt caching and rate limiting |
+| A Dynamic account | Environment ID + API token |
+
+### Platform Support
+
+| Platform | Full MPC | Dry-Run | Self-Test |
+|---|---|---|---|
+| Linux (x64) | ✅ | ✅ | ✅ |
+| Linux (ARM) | ✅ | ✅ | ✅ |
+| macOS (Intel) | ✅ | ✅ | ✅ |
+| macOS (Apple Silicon) | ✅ | ✅ | ✅ |
+| Windows | ❌ | ✅ | ✅ |
+
+> **Windows users:** Use `npm run run:dry` for steps 3–5 with a local signer, or run the full flow in a Linux VM / WSL2 / Docker container.
+
+---
+
+## Installation
+
+### 1. Clone the Repository
+
+```bash
+git clone https://github.com/your-org/spigot.git
+cd spigot
+```
+
+### 2. Install Dependencies
+
+```bash
+npm install
+```
+
+### 3. Configure Environment
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` with your Dynamic credentials:
+
+```dotenv
+# Step 1: DynamicEvmWalletClient
+DYNAMIC_ENVIRONMENT_ID=your-env-id
+DYNAMIC_API_TOKEN=your-api-token
+DYNAMIC_WALLET_PASSWORD=your-secure-password
+
+# Step 2: Wallet creation
+DYNAMIC_THRESHOLD_SIGNATURE_SCHEME=TWO_OF_TWO
+DYNAMIC_BACKUP_TO_CLIENT_SHARE_SERVICE=true
+DYNAMIC_WALLET_STORE=.dynamic-wallet.json
+DYNAMIC_RESET_WALLET=false
+
+# Step 3: Tempo Moderato faucet
+TEMPO_RPC_URL=https://rpc.moderato.tempo.xyz
+TEMPO_SKIP_FAUCET=false
+
+# Step 5: MPP payment
+MPP_URL=https://mpp.dev/api/ping/paid
+MPP_POLYFILL_FETCH=false
+```
+
+### 4. Verify Installation
+
+```bash
+# Offline self-test (no credentials needed)
+npm run self-test
+
+# Full walkthrough (Linux/macOS only)
+npm run run
+
+# Dry-run (any platform)
+npm run run:dry
+```
+
+---
+
+## Environment Variables
+
+### Dynamic Configuration
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `DYNAMIC_ENVIRONMENT_ID` | ✅ | — | Dynamic environment ID (Dashboard → Developers → Environments) |
+| `DYNAMIC_API_TOKEN` | ✅ | — | Dynamic API token (Dashboard → Developers → API tokens) |
+| `DYNAMIC_WALLET_PASSWORD` | Conditional | — | Password for client share backup (required when backup is enabled) |
+| `DYNAMIC_BASE_API_URL` | — | — | Override for self-hosted/staging Dynamic API |
+| `DYNAMIC_BASE_MPC_RELAY_API_URL` | — | — | Override for self-hosted/staging MPC relay |
+| `DYNAMIC_THRESHOLD_SIGNATURE_SCHEME` | — | `TWO_OF_TWO` | `TWO_OF_TWO`, `TWO_OF_THREE`, or `THREE_OF_FIVE` |
+| `DYNAMIC_BACKUP_TO_CLIENT_SHARE_SERVICE` | — | `true` | Back up client share to Dynamic's service |
+| `DYNAMIC_WALLET_STORE` | — | `.dynamic-wallet.json` | Local file for wallet metadata |
+| `DYNAMIC_RESET_WALLET` | — | `false` | Re-run keygen and replace stored wallet |
+
+### Tempo Configuration
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `TEMPO_RPC_URL` | — | `https://rpc.moderato.tempo.xyz` | Tempo Moderato RPC endpoint |
+| `TEMPO_SKIP_FAUCET` | — | `false` | Skip faucet funding (wallet already funded) |
+
+### MPP Configuration
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `MPP_URL` | — | `https://mpp.dev/api/ping/paid` | 402-protected endpoint to pay for |
+| `MPP_POLYFILL_FETCH` | — | `false` | Also wrap `globalThis.fetch` |
+
+### Dry-Run Configuration
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `DYNAMIC_TEMPO_DRY_RUN_PRIVATE_KEY` | — | Anvil test key | Private key for dry-run signing |
+
+### CLI Flags
+
+All environment variables can be overridden via CLI flags:
+
+```bash
+node src/tempo/run.js \
+  --skip-faucet \              # Skip faucet funding
+  --reset \                    # Re-run keygen
+  --scheme TWO_OF_THREE \      # Override threshold scheme
+  --url https://my.api.com/paid \  # Override MPP URL
+  --dry-run \                  # Use local key instead of Dynamic
+  --key 0x…                    # Specific private key for dry-run
+```
+
+---
+
+## Configuration Options
+
+### Threshold Signature Schemes
+
+| Scheme | Shares | Threshold | Use Case |
+|---|---|---|---|
+| `TWO_OF_TWO` | 2 | 2 | Maximum security; both shares required |
+| `TWO_OF_THREE` | 3 | 2 | One share can be lost; still secure |
+| `THREE_OF_FIVE` | 5 | 3 | Enterprise; multiple backup shares |
+
+### Wallet Store
+
+The wallet store is a local JSON file containing **non-secret metadata only**:
+
+```json
+{
+  "accountAddress": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+  "createdAt": "2026-09-30T12:00:00.000Z",
+  "thresholdSignatureScheme": "TWO_OF_TWO",
+  "walletMetadata": {
+    "accountAddress": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+    "walletId": "wallet-abc123",
+    "shareSetId": "shareset-def456",
+    "derivationPath": "m/44'/60'/0'/0/0"
+  }
+}
+```
+
+> **Security:** Key shares are never stored locally. They are recovered from Dynamic's client share service on demand using `DYNAMIC_WALLET_PASSWORD`.
+
+---
+
+## Running in Development
+
+### Full Walkthrough (Linux/macOS)
+
+```bash
+npm run run
+```
+
+This executes all five steps:
+
+1. **Authenticate** — Build and authenticate a `DynamicEvmWalletClient`
+2. **Create Wallet** — Run MPC keygen (`TWO_OF_TWO`) with client share backup
+3. **Fund** — Mint test stablecoins from the Tempo Moderato faucet
+4. **Build Signer** — Wrap the MPC signer in a Tempo-compatible viem account
+5. **Pay** — Pay for a 402-protected endpoint with MPP and print the receipt
+
+### Dry-Run (Any Platform)
+
+```bash
+npm run run:dry
+```
+
+Skips steps 1–2 and signs with a local private key instead of the MPC network. Useful for:
+- Windows development
+- CI/CD pipelines
+- Testing the payment flow without Dynamic credentials
+
+### Self-Test (Offline)
+
+```bash
+npm run self-test
+```
+
+Validates all signing and serialization logic without any network calls or credentials:
+- Tempo transaction serialization (type `0x76`)
+- Fee-payer (sponsored) transactions (type `0x78`)
+- EIP-1559 fallback
+- `signMessage` / `signTypedData` / `sign`
+- MPP client creation
+
+---
+
+## Running in Production
+
+### Environment Checklist
+
+Before deploying to production:
+
+- [ ] Use a dedicated Dynamic environment (not the test environment)
+- [ ] Set a strong `DYNAMIC_WALLET_PASSWORD` (use a password manager)
+- [ ] Set `DYNAMIC_RESET_WALLET=false`
+- [ ] Set `TEMPO_SKIP_FAUCET=true` (use a funded wallet)
+- [ ] Set `MPP_POLYFILL_FETCH=false` (avoid intercepting unrelated fetches)
+- [ ] Configure a production `TEMPO_RPC_URL` (or use the default mainnet RPC)
+- [ ] Set up secrets management (AWS Secrets Manager, Doppler, etc.)
+- [ ] Configure monitoring and alerting
+- [ ] Set up log aggregation
+
+### Production Script
+
+```bash
+# Use a process manager
+npm install -g pm2
+
+# Start with PM2
+pm2 start src/tempo/run.js --name spigot
+
+# Or with explicit env vars
+DYNAMIC_ENVIRONMENT_ID=prod-env \
+DYNAMIC_API_TOKEN=prod-token \
+DYNAMIC_WALLET_PASSWORD=prod-password \
+pm2 start src/tempo/run.js --name spigot
+```
+
+---
+
+## Docker Deployment
+
+### Dockerfile
+
+```dockerfile
+FROM node:20-slim
+
+WORKDIR /app
+
+# Copy package files
+COPY package.json package-lock.json ./
+
+# Install dependencies
+RUN npm ci --omit=dev
+
+# Copy source
+COPY src/ ./src/
+COPY .env.example .env.example
+
+# Create volume for wallet store
+VOLUME ["/app/data"]
+
+# Default: run the walkthrough
+CMD ["node", "src/tempo/run.js"]
+```
+
+### Build and Run
+
+```bash
+# Build
+docker build -t spigot .
+
+# Run with environment variables
+docker run --rm \
+  -e DYNAMIC_ENVIRONMENT_ID=your-env-id \
+  -e DYNAMIC_API_TOKEN=your-api-token \
+  -e DYNAMIC_WALLET_PASSWORD=your-password \
+  -v spigot-data:/app/data \
+  spigot
+
+# Run dry-run (any platform)
+docker run --rm spigot node src/tempo/run.js --dry-run
+
+# Run self-test
+docker run --rm spigot node src/tempo/selfTest.js
+```
+
+### Docker Compose
+
+```yaml
+version: "3.8"
+
+services:
+  spigot:
+    build: .
+    environment:
+      - DYNAMIC_ENVIRONMENT_ID=${DYNAMIC_ENVIRONMENT_ID}
+      - DYNAMIC_API_TOKEN=${DYNAMIC_API_TOKEN}
+      - DYNAMIC_WALLET_PASSWORD=${DYNAMIC_WALLET_PASSWORD}
+      - TEMPO_RPC_URL=${TEMPO_RPC_URL:-https://rpc.moderato.tempo.xyz}
+      - MPP_URL=${MPP_URL:-https://mpp.dev/api/ping/paid}
+    volumes:
+      - spigot-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  spigot-data:
+```
+
+```bash
+docker compose up -d
+```
+
+---
+
+## Vercel Deployment
+
+### For the UI (Landing Page)
+
+The UI is a static site. Deploy it to Vercel:
+
+1. Push your repo to GitHub
+2. Import the repo in Vercel
+3. Set the root directory to `src/ui/`
+4. Framework preset: **Other** (or **Vite** if you add a build step)
+5. Build command: `echo "static site"`
+6. Output directory: `./`
+
+### For the API (Serverless)
+
+If you deploy the API gateway as a Vercel serverless function:
+
+```javascript
+// api/v1/endpoint.js
+import { createMppClient } from '../../src/tempo/mppClient.js';
+
+export default async function handler(req, res) {
+  // Your business logic here
+  const result = await doExpensiveWork(req.body);
+
+  // Return 402 if payment not provided
+  if (!req.headers['payment-receipt']) {
+    return res.status(402).json({
+      error: 'payment_required',
+      payment: {
+        method: 'tempo',
+        amount: '40000',
+        token: '0x20c0000000000000000000000000000000000000',
+        chainId: 42431,
+      },
+    });
+  }
+
+  // Verify receipt and serve
+  return res.status(200).json({ result });
+}
+```
+
+> **Note:** Vercel serverless functions run on Linux, so Dynamic MPC works. However, the 10-second timeout may be insufficient for key ceremony. Use a separate service for wallet creation.
+
+---
+
+## Railway Deployment
+
+### Deploy as a Service
+
+1. Push your repo to GitHub
+2. Import the repo in Railway
+3. Add environment variables in the Railway dashboard
+4. Set the start command: `node src/tempo/run.js`
+5. Add a volume mount at `/app/data` for the wallet store
+
+### `railway.json`
+
+```json
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "build": {
+    "builder": "NIXPACKS"
+  },
+  "deploy": {
+    "startCommand": "node src/tempo/run.js",
+    "healthcheckPath": "/health",
+    "healthcheckTimeout": 300,
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 3
+  }
+}
+```
+
+---
+
+## Troubleshooting
+
+### Common Issues
+
+| Issue | Cause | Solution |
+|---|---|---|
+| `Missing configuration: DYNAMIC_ENVIRONMENT_ID` | `.env` not created or incomplete | Copy `.env.example` to `.env` and fill in values |
+| `unsupported system` | Running on Windows | Use `--dry-run` or run in Docker/WSL2 |
+| `tempo_fundAddress failed` | Faucet rate-limited | Wait and retry; or use `TEMPO_SKIP_FAUCET=true` |
+| `authentication failed` | Invalid API token | Regenerate token in Dynamic dashboard |
+| `wallet already exists` | Wallet store file exists | Delete `.dynamic-wallet.json` or use `--reset` |
+| `MPP request failed with status 402` | Payment not accepted | Check receipt format; verify on-chain |
