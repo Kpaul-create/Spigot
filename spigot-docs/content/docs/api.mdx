@@ -3,313 +3,420 @@ title: API Reference
 description: Every route the Spigot gateway exposes, including the 402 payment handshake.
 ---
 
-## Authentication & Payment Flow
+## Payment model
 
-Spigot uses the **MPP (Micropayment Protocol)** built on HTTP `402 Payment Required`. There is no API key or bearer token — payment itself is the credential.
+Paid endpoints answer `402 Payment Required` until a payment is attached. There is no API key or bearer token — payment itself is the credential.
 
-### The 402 Flow
+The handshake is **three calls**: the paid endpoint challenges, `/api/pay` settles a real TIP-20 transfer with the configured signer and sends it to the merchant destination, and the resulting receipt is presented back to the endpoint. The server emits no `Payment-Required` or `Payment-Info` headers; the challenge is a JSON body. See [Payments](/docs/payments) for the full flow and receipt format.
 
 ```
-Client                                    API Provider
-  │                                             │
-  │  ────────── GET /v1/endpoint ──────────▶   │
-  │                                             │
-  │  ◀────── 402 Payment Required ──────────    │
-  │       Payment-Required: tempo               │
-  │       Payment-Info: {"amount": 1000,        │
-  │         "token": "0x20c0…0000",             │
-  │         "chainId": 42431}                   │
-  │                                             │
-  │  [Client signs charge credential with       │
-  │   MPC wallet → Tempo transaction]           │
-  │                                             │
-  │  ─── GET /v1/endpoint ──────────────────▶  │
-  │       Payment-Receipt: 0x76f86c…            │
-  │                                             │
-  │  ◀────── 200 OK ────────────────────────    │
-  │       {"result": "..."}                     │
-  │                                             │
+Client                                    Server
+  │                                          │
+  │  ───── GET /api/weather ────────────▶   │
+  │                                          │
+  │  ◀──── 402 { error, price, howToPay }    │
+  │                                          │
+  │  ───── POST /api/pay ───────────────▶   │
+  │       { amount, endpoint, agentId }      │
+  │                                          │
+  │  ◀──── 200 { receipt }                  │
+  │                                          │
+  │  ───── GET /api/weather ────────────▶   │
+  │       Payment-Receipt: eyJjaGFpbklk…     │
+  │                                          │
+  │  ◀──── 200 { data }                     │
+  │                                          │
 ```
-
-### Step-by-step
-
-1. **Request** — Client sends a normal HTTP request to a protected endpoint.
-2. **Challenge** — Server responds `402` with a `Payment-Required` header naming the payment method (`tempo`) and a `Payment-Info` header with the charge details (amount, token, chain ID).
-3. **Sign** — Client's MPP wrapper intercepts the 402, serializes a Tempo charge transaction, signs it with the Dynamic MPC wallet, and submits it to Tempo.
-4. **Retry** — Client retries the original request with a `Payment-Receipt` header containing the signed transaction envelope.
-5. **Serve** — Server verifies the receipt on-chain (or via sequencer) and serves the response.
 
 ---
 
 ## REST Endpoints
 
-### `GET /api/ping/paid`
+| Route | Method | Price | Description |
+|---|---|---|---|
+| `/api/health` | GET | free | Liveness check |
+| `/api/pay` | GET | free | Wallet and signer configuration |
+| `/api/directory` | GET | free | Lists endpoints and prices |
+| `/api/search` | GET | free | Docs search over the MDX content |
+| `/api/dashboard/stats` | GET | free | Revenue, call count, revenue history |
+| `/api/dashboard/transactions` | GET | free | Recent transactions |
+| `/api/chat` | POST | free | Streaming docs assistant |
+| `/api/weather` | GET | **$0.005** | Live weather for `?city=`, via Open-Meteo |
+| `/api/premium-data` | GET | **$0.02** | Live crypto market snapshot, via CoinGecko |
+| `/api/agent/status` | GET | free | Wallet balance, model, tool list, network |
+| `/api/agent/chat` | POST | free | Chat; the agent pays per tool from its own wallet |
+| `/api/agent/run` | POST | free | Full agent run: decide, pay, call |
+| `/api/agent/fund` | POST | free | Funds the agent wallet from a real transfer |
 
-The demo endpoint that answers with `402 Payment Required`. Used by the walkthrough to validate the full payment flow.
+Prices live in `lib/pricing.ts` and are read by the routes, the agent, the directory and the demo page from that single constant, so they cannot drift.
 
-#### Request
-
-```http
-GET /api/ping/paid HTTP/1.1
-Host: mpp.dev
-```
-
-#### Response — 402 (unpaid)
-
-```http
-HTTP/1.1 402 Payment Required
-Payment-Required: tempo
-Payment-Info: {"amount":1000,"token":"0x20c0000000000000000000000000000000000000","chainId":42431}
-Content-Type: application/json
-
-{"error":"payment_required","message":"This endpoint requires payment"}
-```
-
-#### Request (with payment)
-
-```http
-GET /api/ping/paid HTTP/1.1
-Host: mpp.dev
-Payment-Receipt: 0x76f86c808252089420c00000000000000000000000000000000000008084deadbeef808080
-```
-
-#### Response — 200 (paid)
-
-```http
-HTTP/1.1 200 OK
-Payment-Receipt: 0x76f86c808252089420c00000000000000000000000000000000000008084deadbeef808080
-Content-Type: application/json
-
-{"pong":true,"paid":true}
-```
+The two agent routes are **free to call and are not paywalled** — they verify no receipt. `/api/directory` used to advertise them at $0.01 and $0.035 anyway, which made the machine-readable price list contradict the routes; an agent budgeting from it would reserve money it never spends. What costs money there is the tool the agent chooses, settled from the agent's own wallet, and reported back as `totalSpent`.
 
 ---
 
-### `POST /api/v1/generate`
+### `GET /api/health`
 
-Example protected AI endpoint (image generation). Charges 0.04 USD equivalent per call.
-
-#### Request
-
-```http
-POST /api/v1/generate HTTP/1.1
-Host: api.example.com
-Content-Type: application/json
-
-{"prompt":"a serene mountain landscape","width":1024,"height":1024}
+```json
+{ "status": "ok", "timestamp": "2026-10-02T15:11:59.718Z" }
 ```
 
-#### Response — 402 (unpaid)
+### `GET /api/pay`
+
+Reports signer status, merchant destination, and whether this configuration can safely settle payments.
 
 ```json
 {
-  "error": "payment_required",
-  "message": "This endpoint requires payment",
-  "payment": {
-    "method": "tempo",
-    "amount": "40000",
-    "token": "0x20c0000000000000000000000000000000000000",
-    "chainId": 42431,
-    "currency": "PathUSD"
-  }
+  "wallet": { "configured": true, "address": "0xAgentWallet" },
+  "defaultToken": { "symbol": "PathUSD" },
+  "settlementAddress": null,
+  "merchantConfigured": false,
+  "settlesToBurnAddress": false,
+  "settlementSupported": true,
+  "paymentsReady": false
 }
 ```
 
-#### Response — 200 (paid)
+### `POST /api/pay`
+
+Settles a payment and returns a receipt. Signs and broadcasts a real TIP-20 transfer; requires a configured wallet (`503` if not).
+
+**Request**
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `amount` | number | yes | USD, must be positive |
+| `endpoint` | string | no | Route the receipt unlocks. Defaults to `/api/pay` |
+| `agentId` | string | no | Bound into the receipt. Defaults to `agt-0000` |
+| `token` | string | no | TIP-20 symbol or address. Defaults to the chain default |
+| `to` | string | no | Must equal `TEMPO_MERCHANT_ADDRESS` if supplied |
+
+```bash
+curl -X POST http://localhost:3000/api/pay \
+  -H "content-type: application/json" \
+  -d '{"amount":0.005,"endpoint":"/api/weather","agentId":"agt-0000"}'
+```
+
+**Response — 200**
 
 ```json
 {
-  "result": {
-    "image_url": "https://cdn.example.com/images/abc123.png",
-    "prompt": "a serene mountain landscape",
-    "seed": 42
+  "success": true,
+  "transactionId": "0x5d0f34…",
+  "receipt": "eyJjaGFpbklkIjo0MjQzMS…",
+  "chainId": 42431,
+  "blockNumber": "37862711",
+  "amount": 0.005,
+  "token": "PathUSD",
+  "from": "0x19E7E376…",
+  "to": "0x1234567890abcdef1234567890abcdef12345678",
+  "explorerUrl": "https://explore.testnet.tempo.xyz/tx/0x5d0f34…"
+}
+```
+
+**Errors:** `400` invalid body or a `to` that is not the merchant address · `503` signer or merchant destination unavailable, or the configured destination is a known burn address · `502` settlement failed.
+
+### `GET /api/weather` — $0.005
+
+Accepts `?city=`. Requires a receipt for this exact route.
+
+**Without payment — 402**
+
+```json
+{
+  "error": "Payment required",
+  "message": "Missing Payment-Receipt header",
+  "price": 0.005,
+  "howToPay": "POST /api/pay with { amount, endpoint: \"/api/weather\", agentId }"
+}
+```
+
+**Paid — 200**
+
+```json
+{
+  "data": {
+    "city": "Oslo",
+    "country": "Norway",
+    "latitude": 59.91273,
+    "longitude": 10.74609,
+    "temperature": 15.1,
+    "apparentTemperature": 15.8,
+    "humidity": 90,
+    "windSpeed": 3.2,
+    "condition": "overcast",
+    "weatherCode": 3,
+    "observedAt": "2026-10-02T17:45:00",
+    "timezone": "Europe/Oslo"
   },
   "payment": {
-    "receipt": "0x76f86c…",
-    "amount": "40000",
-    "token": "PathUSD"
-  }
+    "amount": 0.005,
+    "txHash": "0x5d0f34…",
+    "blockNumber": "37862711",
+    "payer": "0x19e7e376…"
+  },
+  "timestamp": "2026-10-02T14:41:42.164Z"
 }
 ```
 
----
+Live data from Open-Meteo: the city is geocoded, then current conditions are read for those coordinates. `temperature`, `apparentTemperature` and `windSpeed` are Celsius and km/h; `weatherCode` is the raw WMO code and `condition` is its English description. `observedAt` is local wall-clock time at the location, not UTC — `timezone` names the zone.
 
-### `GET /api/v1/balance`
-
-Query the spending balance for a wallet address.
-
-#### Request
-
-```http
-GET /api/v1/balance?address=0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266 HTTP/1.1
-Host: api.example.com
-```
-
-#### Response — 200
+An unrecognised city is **502**, not an invented forecast:
 
 ```json
 {
-  "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
-  "balances": [
-    {"token": "PathUSD", "raw": "100000000", "formatted": "100.0", "decimals": 6},
-    {"token": "AlphaUSD", "raw": "50000000", "formatted": "50.0", "decimals": 6},
-    {"token": "BetaUSD", "raw": "0", "formatted": "0.0", "decimals": 6},
-    {"token": "ThetaUSD", "raw": "25000000", "formatted": "25.0", "decimals": 6}
+  "error": "Weather upstream unavailable",
+  "message": "Unknown city \"Zzzqqxxnotacity\"",
+  "city": "Zzzqqxxnotacity",
+  "payment": { "amount": 0.005, "txHash": "0x84945d…" }
+}
+```
+
+The payment has already settled at that point and is stated in the response, because the endpoint cannot un-charge it.
+
+### `GET /api/premium-data` — $0.02
+
+Same handshake. Optionally send `X-Agent-Id` to bind the receipt to your agent; if you send it, the receipt's `agentId` must match.
+
+```json
+{
+  "data": {
+    "totalMarketCapUsd": 2914559276328.914,
+    "totalVolume24hUsd": 116132472057.6488,
+    "btcDominancePct": 58.75369294620523,
+    "ethDominancePct": 11.270437739376966,
+    "activeCryptocurrencies": 21782,
+    "marketChange24hPct": -1.4921096589568208,
+    "assets": [
+      {
+        "id": "bitcoin",
+        "symbol": "BTC",
+        "name": "Bitcoin",
+        "priceUsd": 85349,
+        "change24hPct": 1.4194255032785459,
+        "marketCapUsd": 1716073491394.5603,
+        "volume24hUsd": 42432807585.93355
+      }
+    ],
+    "observedAt": "2026-10-02T15:50:59.881Z"
+  },
+  "payment": { "amount": 0.02, "txHash": "0x…", "payer": "0x…" },
+  "timestamp": "…"
+}
+```
+
+Live data from CoinGecko. BTC, ETH and SOL are tracked. Set `COINGECKO_API_KEY` for a higher rate limit; without it the free tier applies.
+
+An upstream failure is **502**, and the response still carries the `payment` block — the charge has already settled and the endpoint cannot reverse it.
+
+### `GET /api/directory`
+
+Machine-readable price list, including the free routes.
+
+```json
+{
+  "endpoints": [
+    { "path": "/api/health", "method": "GET", "description": "Health check endpoint", "price": 0 },
+    { "path": "/api/weather", "method": "GET", "description": "Get weather data (requires payment)", "price": 0.005 },
+    { "path": "/api/premium-data", "method": "GET", "description": "Access premium data (requires payment)", "price": 0.02 }
   ]
 }
 ```
 
----
-
-### `GET /api/v1/receipt/:txHash`
-
-Verify a payment receipt on-chain.
-
-#### Request
-
-```http
-GET /api/v1/receipt/0xabc123… HTTP/1.1
-Host: api.example.com
-```
-
-#### Response — 200
+### `GET /api/agent/status`
 
 ```json
 {
-  "valid": true,
-  "transactionHash": "0xabc123…",
-  "blockNumber": 1234567,
-  "payer": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
-  "amount": "40000",
-  "token": "0x20c0000000000000000000000000000000000000",
-  "endpoint": "/api/v1/generate",
-  "timestamp": "2026-09-30T12:00:00Z"
+  "wallet": {
+    "configured": true,
+    "address": "0x19E7E376…",
+    "balance": 217002896.095759,
+    "balanceToken": "PathUSD"
+  },
+  "tools": [
+    {
+      "name": "premium_data",
+      "description": "Live crypto market snapshot: BTC/ETH/SOL price with 24h change and market cap, total market cap, 24h volume, BTC and ETH dominance, active coin count",
+      "cost": 0.02
+    },
+    {
+      "name": "weather",
+      "description": "Current observed weather for any city: temperature, apparent temperature, humidity, wind speed, condition and WMO code",
+      "cost": 0.005
+    }
+  ],
+  "model": { "provider": "gateway", "model": "anthropic/claude-3.5-sonnet", "configured": false },
+  "defaultToken": "PathUSD",
+  "network": { "chainId": 42431, "name": "Tempo Testnet (Moderato)", "rpcUrl": "https://rpc.moderato.tempo.xyz" }
 }
 ```
+
+`balance` is the agent's spendable **TIP-20** balance — the stablecoin payments actually settle in — read via `balanceOf`. `balanceToken` names the currency. It is `null` on a failed read, in which case `balanceError` explains why; the rest of the status still returns.
+
+It is deliberately not the native coin balance. `getNativeBalance()` divides by 1e18 on the assumption that the native unit is an 18-decimal ERC-20 value, which is not true on Moderato, so it reports figures like `4.24e+57`.
+
+`model.configured: false` means no LLM key is set, which affects only the agent routes. The paid endpoints work without one.
+
+### `POST /api/agent/run`
+
+```json
+{ "task": "What's the weather in Oslo?" }
+```
+
+The graph decides which paid tool to use, settles the payment itself, calls the endpoint with the receipt, and answers. A payment failure is a real error that stops the run.
+
+`threadId` is optional. Reuse one to keep a conversation's spend and checkpoint state together; omit it for a fresh thread.
+
+```json
+{
+  "threadId": "thread-1759000000000",
+  "agentId": "agt-0000",
+  "answer": "Oslo is currently 15.1°C and overcast, with 90% humidity and wind at 3.2 km/h.",
+  "toolUsed": "weather",
+  "receipt": "eyJjaGFpbklkIjo0MjQzMS…",
+  "totalSpent": 0.005,
+  "error": null,
+  "steps": 1,
+  "network": "Tempo Testnet (Moderato)",
+  "durationMs": 1503
+}
+```
+
+`totalSpent` is what was actually broadcast, not a budget. Each run pays once. On failure `error` is set and `totalSpent` reflects what was spent before it stopped.
+
+Both agent routes return **500** with `{"error":"Agent run failed","message":"LLM_GATEWAY_API_KEY is not set…"}` when no model key is configured. That is the only thing blocking them; the wallet and the payment path work without a key.
+
+### `POST /api/agent/chat`
+
+```json
+{ "message": "What can I buy here?", "threadId": "thread-1759000000000" }
+```
+
+`threadId` is optional and carries a conversation across calls.
+
+```json
+{
+  "text": "…",
+  "toolsUsed": ["weather"],
+  "cost": 0.005,
+  "durationMs": 640
+}
+```
+
+### `POST /api/agent/fund`
+
+Funds the agent wallet after verifying a **real inbound transfer**. A browser cannot sign one, so you send tokens to the wallet in `/api/agent/status`, then submit the resulting hash.
+
+| Field | Type | Required |
+|---|---|---|
+| `amount` | number | yes — a floor to check against |
+| `txHash` | string | yes — `0x` + 64 hex |
+| `token` | string | no |
+
+```bash
+curl -X POST http://localhost:3000/api/agent/fund \
+  -H "content-type: application/json" \
+  -d '{"amount":1.00,"txHash":"0x…"}'
+```
+
+The credited amount is read from the transaction's calldata, not from your request, and the funds must have arrived at the agent's address. A given transaction can only be claimed once.
+
+```json
+{
+  "success": true,
+  "credited": 1.0,
+  "token": "PathUSD",
+  "txHash": "0x…",
+  "blockNumber": "37862711",
+  "from": "0x…",
+  "explorerUrl": "https://explore.testnet.tempo.xyz/tx/0x…"
+}
+```
+
+**Errors:** `400` malformed body or unknown token · `402` transfer not found, not confirmed, too small, or sent elsewhere · `503` no wallet configured · `502` verification failed.
+
+### `GET /api/dashboard/stats` and `/api/dashboard/transactions`
+
+In-memory and process-local. Stats report merchant revenue, which excludes `POST /api/agent/fund` rows — those are transfers *into* the agent wallet, not earnings, and counting both double-counts every dollar.
+
+```json
+{
+  "totalRevenue": 0.03,
+  "totalCalls": 2,
+  "activeEndpoints": 1,
+  "avgSettlement": 0.015,
+  "revenueHistory": [{ "date": "2026-10-02", "amount": 0.03 }]
+}
+```
+
+Revenue history accumulates from real settlements. It is bounded to 30 days and resets on restart, since there is no database.
+
+### `GET /api/dashboard/transactions`
+
+Newest first, capped at 1000 entries.
+
+```json
+{
+  "transactions": [
+    {
+      "id": "0x3b4ad173d44fcebeaa9a2d03f62fd5603c933a1a089db53571504beb41c85694",
+      "amount": 0.02,
+      "currency": "USD",
+      "receipt": "eyJjaGFpbklkIjo0MjQzMS…",
+      "endpoint": "/api/premium-data",
+      "timestamp": "2026-10-02T16:11:03.447Z",
+      "status": "completed",
+      "txHash": "0x3b4ad173d44fcebeaa9a2d03f62fd5603c933a1a089db53571504beb41c85694",
+      "blockNumber": "37868687",
+      "payer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A"
+    }
+  ]
+}
+```
+
+`txHash`, `blockNumber` and `payer` are present on settled payments and absent on `failed` rows. The home page renders these, so a row there can be checked against the chain instead of taken on the app's word — `blockNumber` and `payer` come from the settlement result, not from the request.
+
+### `POST /api/chat`
+
+Streaming docs assistant. Requires `LLM_GATEWAY_API_KEY`; answers `400` on a malformed body and `500` when the gateway is unreachable.
 
 ---
 
 ## Error Codes
 
-| HTTP Status | Error Code | Description |
+Every error is a plain JSON object with `error` and `message`. There is no RFC 7807 envelope.
+
+| HTTP | `error` | Meaning |
 |---|---|---|
-| `400` | `invalid_request` | Malformed request body or parameters |
-| `401` | `unauthorized` | Missing or invalid authentication (for non-payment endpoints) |
-| `402` | `payment_required` | Payment has not been provided |
-| `402` | `payment_insufficient` | Payment amount is less than required |
-| `402` | `payment_expired` | Payment receipt has expired (transaction too old) |
-| `402` | `payment_invalid` | Receipt signature or format is invalid |
-| `402` | `payment_reused` | Receipt has already been spent (replay protection) |
-| `403` | `forbidden` | Wallet is blacklisted or policy violation |
-| `404` | `not_found` | Endpoint does not exist |
-| `429` | `rate_limited` | Too many requests; see Rate Limiting below |
-| `500` | `internal_error` | Unexpected server error |
-| `502` | `bad_gateway` | Upstream provider (LLM, compute) unavailable |
-| `503` | `service_unavailable` | Tempo RPC or Dynamic MPC service unavailable |
+| `400` | `Invalid request body` | Body failed validation; `details` carries the Zod issues |
+| `400` | `Invalid settlement address` | `/api/pay` was given a `to` that is not the merchant |
+| `400` | `Unknown token` | `token` did not resolve |
+| `400` | `Invalid or missing JSON body` | Body was empty or not JSON |
+| `402` | `Payment required` | No `Payment-Receipt` header; `price` and `howToPay` included |
+| `402` | `Payment rejected` | Receipt failed verification; `message` says which check |
+| `402` | `Funding rejected` | Inbound transfer unverified (`/api/agent/fund`) |
+| `502` | `Funding verification failed` | Chain read threw |
+| `503` | `No wallet configured` | Set `TEMPO_PRIVATE_KEY`, or `TEMPO_SIGNER=dynamic` with all three Dynamic vars |
+| `500` | `Payment failed` | `/api/pay` broadcast threw |
 
-### Error Response Format
+Rejection reasons you can see in a `402` `message`:
 
-All errors follow RFC 7807 (Problem Details):
-
-```json
-{
-  "type": "https://api.example.com/errors/payment_required",
-  "title": "Payment Required",
-  "status": 402,
-  "detail": "This endpoint requires payment of 40000 PathUSD",
-  "instance": "/api/v1/generate",
-  "payment": {
-    "method": "tempo",
-    "amount": "40000",
-    "token": "0x20c0000000000000000000000000000000000000",
-    "chainId": 42431
-  }
-}
-```
+| Message | Cause |
+|---|---|
+| `Receipt is malformed or not a Spigot receipt` | Not base64url JSON from `/api/pay` |
+| `Transaction 0x… not found on chain` | Nothing at that hash |
+| `Transaction 0x… is not confirmed yet` | Still propagating |
+| `Transaction 0x… reverted` | Transfer failed |
+| `Transaction target is not the token named in the receipt` | Called a different contract |
+| `Could not decode a transfer amount from the transaction` | Not a TIP-20 transfer |
+| `Receipt amount does not match the on-chain transfer` | Blob disagrees with calldata |
+| `Paid 0.001, need at least 0.005` | Underpaid |
+| `Payment settled to 0x…, not the merchant address …` | Paid the wrong address |
+| `Receipt is for /api/other, not /api/weather` | Bought for a different route |
+| `Receipt belongs to agent agt-XXXX, not agt-YYYY` | `X-Agent-Id` disagrees with the receipt |
+| `Receipt has already been redeemed` | Replay |
 
 ---
 
-## Rate Limiting
+## Rate limiting
 
-Rate limits are enforced per wallet address and per endpoint.
-
-| Tier | Requests/min | Burst | Applies to |
-|---|---|---|---|
-| Default | 60 | 10 | All authenticated (paid) requests |
-| Premium | 600 | 100 | Whitelisted addresses |
-| Faucet | 10 | 2 | `tempo_fundAddress` calls |
-
-### Rate Limit Headers
-
-```http
-X-RateLimit-Limit: 60
-X-RateLimit-Remaining: 58
-X-RateLimit-Reset: 1709212800
-```
-
-### 429 Response
-
-```json
-{
-  "type": "https://api.example.com/errors/rate_limited",
-  "title": "Too Many Requests",
-  "status": 429,
-  "detail": "Rate limit exceeded. Try again in 30 seconds.",
-  "retry_after": 30
-}
-```
-
----
-
-## WebSocket Events (Future)
-
-> **Status:** Planned for v2.0. Not yet implemented.
-
-The WebSocket channel will push real-time payment and settlement events to connected clients.
-
-### Connection
-
-```
-wss://api.example.com/v1/ws
-```
-
-### Authentication
-
-Send a signed connection message within 10 seconds of connecting:
-
-```json
-{
-  "type": "auth",
-  "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
-  "signature": "0x…",
-  "timestamp": 1709212800
-}
-```
-
-### Events
-
-| Event | Direction | Description |
-|---|---|---|
-| `payment.received` | Server → Client | A payment was detected on-chain |
-| `payment.settled` | Server → Client | Payment confirmed and settled |
-| `payment.failed` | Server → Client | Payment transaction reverted |
-| `balance.updated` | Server → Client | Wallet balance changed |
-| `subscription.started` | Client → Server | Subscribe to an address's events |
-| `subscription.ended` | Client → Server | Unsubscribe from events |
-
-### Event Payload Example
-
-```json
-{
-  "event": "payment.settled",
-  "data": {
-    "transactionHash": "0xabc123…",
-    "payer": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
-    "amount": "40000",
-    "token": "PathUSD",
-    "endpoint": "/api/v1/generate",
-    "blockNumber": 1234567,
-    "timestamp": "2026-09-30T12:00:00Z"
-  }
-}
-```
+There is **no rate limiting**. Replay protection prevents a receipt being spent twice, but nothing caps request volume. `POST /api/pay` is also unmetered, so it will happily sign and broadcast as fast as it is called.

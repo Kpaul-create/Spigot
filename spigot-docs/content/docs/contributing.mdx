@@ -1,345 +1,179 @@
 ---
 title: Contributing
-description: Branching, commit conventions and local checks.
+description: Code style, checks and PR process.
 ---
 
-Thank you for your interest in contributing to Spigot! This document describes the development workflow, code style, and testing requirements.
+The app is TypeScript throughout. The only JavaScript is the standalone CLI walkthrough in `cli/tempo/`.
 
 ---
 
-## Code Style
+## Layout
 
-### General Principles
-
-- **JavaScript (ESM)** — All source files use `"type": "module"` and `import`/`export` syntax.
-- **No TypeScript** — The project is plain JavaScript with JSDoc annotations for type hints.
-- **Node.js built-ins** — Use `node:` prefix for built-in modules (`node:fs`, `node:path`, `node:crypto`).
-- **Async/await** — Always prefer `async/await` over raw Promises or callbacks.
-- **Explicit error handling** — Throw descriptive errors with `cause` chaining.
-
-### Formatting
-
-```javascript
-// ✅ Good
-import { existsSync, readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-
-export function loadEnv(path = resolve(projectRoot, '.env')) {
-  if (!existsSync(path))
-    return {};
-  const values = parseEnv(readFileSync(path, 'utf8'));
-  for (const [key, value] of Object.entries(values))
-    if (process.env[key] === undefined)
-      process.env[key] = value;
-  return values;
-}
-
-// ❌ Bad
-import {existsSync, readFileSync} from "fs";
-import {dirname, resolve} from "path";
-export function loadEnv(path) {
-  if (!existsSync(path)) return {};
-  const values = parseEnv(readFileSync(path, "utf8"));
-  for (const [key, value] of Object.entries(values)) {
-    if (process.env[key] === undefined) {
-      process.env[key] = value;
-    }
-  }
-  return values;
-}
+```
+app/            Next.js App Router — pages, API routes, layouts
+  api/          Route handlers
+components/     React components (hero scene, nav, markdown, search)
+lib/            Application logic
+  pricing.ts    Canonical endpoint prices
+  store.ts      In-memory transactions, usage logs, revenue
+  llm.ts        Env-selectable chat model
+  agent-graph.ts LangGraph run: decide → pay → call
+  tempo/        chain.ts, signer.ts, dynamic-signer.ts, payment.ts
+content/docs/   This documentation (MDX)
+cli/tempo/      Standalone ESM walkthrough (JS)
+proxy.ts        Clerk middleware + docs content negotiation
 ```
 
-### Naming Conventions
+---
+
+## Code style
+
+### TypeScript
+
+Strict mode, no implicit `any`, no non-null assertions on values you have not just checked. Prefer narrowing over casts:
+
+```ts
+// good
+if (!token) throw new Error(`Unknown token: ${symbol}`);
+return TOKENS[token];
+
+// avoid
+return TOKENS[token]!;
+```
+
+### Comments explain why, not what
+
+The comment earns its place by recording something the code cannot say — a constraint, a past bug, a non-obvious ordering requirement.
+
+```ts
+// good — records the failure this prevents
+// `markRedeemed: false` matters: this check and the endpoint's own check run
+// on the same receipt, so consuming the guard here would make the endpoint
+// reject its own payment as a replay.
+await verifyReceipt(txHash, { endpoint, minAmount, markRedeemed: false });
+
+// avoid — restates the line below
+// Send the payment
+await settlePayment({ amount, endpoint });
+```
+
+`lib/pricing.ts` and `lib/llm.ts` both carry a header comment naming the drift they exist to prevent. Keep that habit.
+
+### Naming
 
 | Element | Convention | Example |
 |---|---|---|
-| Files | `camelCase.js` | `dynamicWallet.js`, `mppClient.js` |
-| Functions | `camelCase` | `createDynamicWalletClient()` |
-| Constants | `UPPER_SNAKE_CASE` | `TEMPO_MODERATO`, `DEFAULT_WALLET_STORE_PATH` |
-| Classes | `PascalCase` | `DynamicEvmWalletClient` |
-| Private helpers | `camelCase` with JSDoc `@private` | `parseEnv()` |
-| Exported constants | `PascalCase` for objects | `THRESHOLD_SIGNATURE_SCHEMES` |
+| Files | `kebab-case.ts` | `agent-graph.ts`, `dynamic-signer.ts` |
+| Components | `PascalCase.tsx` | `HeroScene`, `Markdown` |
+| Functions, variables | `camelCase` | `verifyReceipt()` |
+| Constants | `UPPER_SNAKE_CASE` | `MAX_TRANSACTIONS`, `TEMPO_MODERATO` |
+| Types, interfaces | `PascalCase` | `VerificationResult` |
+| React refs | `useRef<T>()` named `xRef` | `canvasRef` |
 
-### JSDoc
+### Imports
 
-All exported functions must have JSDoc comments:
+Node builtins, then external, then `@/lib` and `@/app`, separated by blank lines. No default exports in `lib/` — named only.
 
-```javascript
-/**
- * Creates and authenticates a Dynamic server-wallet client for EVM (step 1).
- *
- * @param parameters - The parameters object.
- * @param parameters.environmentId - Dynamic environment ID.
- * @param parameters.apiToken - Dynamic API token.
- * @param parameters.baseApiUrl - Optional API URL override.
- * @param parameters.baseMPCRelayApiUrl - Optional MPC relay URL override.
- * @param parameters.debug - Enable debug logging.
- * @param parameters.logger - Optional logger instance.
- * @returns The authenticated client.
- * @throws {Error} If environmentId or apiToken is missing.
- */
-export async function createDynamicWalletClient(parameters) {
-  // ...
-}
+```ts
+import { NextResponse } from 'next/server';
+import { z } from 'zod';
+
+import { priceOf } from '@/lib/pricing';
+import { verifyReceipt } from '@/lib/tempo/payment';
 ```
 
-### Import Order
+### Errors
 
-```javascript
-// 1. Node.js built-ins
-import { existsSync, readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+Throw with a message that names the fix. Never log key material, receipt contents beyond a hash, or env values.
 
-// 2. External packages
-import { createClient, http, publicActions } from 'viem';
-import { Mppx, tempo } from 'mppx/client';
+```ts
+// good
+throw new Error('LLM_GATEWAY_API_KEY is not set. Add a key to .env.local, or set LLM_PROVIDER=openai with OPENAI_API_KEY instead.');
 
-// 3. Local modules
-import { TEMPO_MODERATO } from './config.js';
-import { createDynamicTempoAccount } from './dynamicTempoAccount.js';
-```
-
----
-
-## Pull Request Process
-
-### 1. Branch Naming
-
-| Prefix | Purpose | Example |
-|---|---|---|
-| `feat/` | New feature | `feat/add-websocket-support` |
-| `fix/` | Bug fix | `fix/receipt-verification-race` |
-| `docs/` | Documentation | `docs/api-reference-update` |
-| `refactor/` | Code refactoring | `refactor/split-config-module` |
-| `test/` | Test additions | `test/add-faucet-integration-test` |
-| `chore/` | Maintenance | `chore/update-viem-version` |
-
-### 2. Commit Messages
-
-Follow [Conventional Commits](https://www.conventionalcommits.org/):
-
-```
-feat: add WebSocket event streaming for payment notifications
-fix: clear stale signature before signing Tempo transactions
-docs: add MPP protocol specification
-test: add fee-payer (0x78) envelope test case
-refactor: extract Tempo serializer into standalone module
-```
-
-### 3. PR Checklist
-
-Before submitting a PR, ensure:
-
-- [ ] `npm run self-test` passes
-- [ ] `npm run run:dry` passes (if applicable)
-- [ ] New exports have JSDoc comments
-- [ ] No `console.log` statements left in production code (use the `logger` pattern)
-- [ ] No hardcoded secrets or credentials
-- [ ] Error messages are descriptive and actionable
-- [ ] Code follows the style guide above
-
-### 4. Review Process
-
-1. **Automated checks** — CI runs the self-test and dry-run
-2. **Code review** — At least one maintainer approves
-3. **Integration test** — Maintainer runs `npm run run` on testnet
-4. **Merge** — Squash and merge with a descriptive commit message
-
----
-
-## Development Workflow
-
-### Setting Up
-
-```bash
-# Clone and install
-git clone https://github.com/your-org/spigot.git
-cd spigot
-npm install
-
-# Create your environment file
-cp .env.example .env
-# Edit .env with your Dynamic credentials (or leave blank for dry-run)
-```
-
-### Running Tests
-
-```bash
-# Offline self-test (no credentials needed)
-npm run self-test
-
-# Dry-run with local key (any platform)
-npm run run:dry
-
-# Full integration test (Linux/macOS only)
-npm run run
-```
-
-### Development Cycle
-
-1. **Create a branch** — `git checkout -b feat/my-feature`
-2. **Make changes** — Edit source files in `src/tempo/`
-3. **Test locally** — `npm run self-test && npm run run:dry`
-4. **Commit** — `git commit -m "feat: add my feature"`
-5. **Push** — `git push origin feat/my-feature`
-6. **Open PR** — Fill out the PR template
-
-### Debugging
-
-#### Enable Dynamic SDK Debug Logging
-
-```javascript
-const client = await createDynamicWalletClient({
-  environmentId,
-  apiToken,
-  debug: true,  // Verbose SDK logging
-  logger: {
-    debug: (msg, data) => console.log('[debug]', msg, data),
-    info: (msg, data) => console.log('[info]', msg, data),
-    warn: (msg, data) => console.warn('[warn]', msg, data),
-    error: (msg, data) => console.error('[error]', msg, data),
-  },
-});
-```
-
-#### Inspect Signing Requests
-
-The dry-run client records every `sign()` call:
-
-```javascript
-const client = createLocalKeyDynamicClient(account);
-// ... perform signing ...
-console.log(client.requests);
-// [
-//   {
-//     accountAddress: '0xf39F…',
-//     chainName: 'EVM',
-//     walletOperation: 'SIGN_TRANSACTION',
-//     message: Uint8Array(…),
-//     context: { evmTransaction: { … } }
-//   }
-// ]
-```
-
-#### Verify Sign Payload
-
-```javascript
-import { Transaction } from 'viem/tempo';
-import { getTempoSignPayload } from './dynamicTempoAccount.js';
-
-const payload = await getTempoSignPayload(transaction);
-const expected = Transaction.z_TxEnvelopeTempo.getSignPayload(transaction);
-console.assert(payload === expected, 'Sign payload mismatch!');
-```
-
----
-
-## Testing Requirements
-
-### Test Coverage
-
-| Area | Required Tests | Command |
-|---|---|---|
-| Tempo serialization | Type `0x76` envelope, sign payload matches `TxEnvelopeTempo.getSignPayload` | `npm run self-test` |
-| Fee-payer transactions | Type `0x78` envelope, null fee-payer marker | `npm run self-test` |
-| EIP-1559 fallback | Standard `0x02` envelope, address recovery | `npm run self-test` |
-| Message signing | `signMessage` recovers to account address | `npm run self-test` |
-| Typed data signing | `signTypedData` recovers to account address | `npm run self-test` |
-| MPP client | `Mppx.create()` accepts the account | `npm run self-test` |
-| Faucet funding | `tempo_fundAddress` mints tokens | `npm run run:dry` |
-| Balance reading | TIP-20 balances returned | `npm run run:dry` |
-| Full payment flow | 402 → sign → receipt → 200 | `npm run run` |
-
-### Writing Tests
-
-Tests use Node.js built-in `assert` module (no external test framework):
-
-```javascript
-import assert from 'node:assert/strict';
-
-// Test: Tempo transaction serializes with type 0x76
-const signedTx = await account.signTransaction(tempoTransaction, {
-  serializer: tempoTransactionSerializer,
-});
-assert.ok(signedTx.startsWith('0x76'), `expected Tempo envelope, got ${signedTx.slice(0, 4)}`);
-
-// Test: Sign payload matches Tempo's expected pre-image
-const payload = await getTempoSignPayload(tempoTransaction);
-assert.equal(payload, Transaction.z_TxEnvelopeTempo.getSignPayload(tempoTransaction));
-```
-
-### Test Principles
-
-1. **No network calls in unit tests** — Use the dry-run client and local keys.
-2. **Deterministic** — Tests must produce the same result every run.
-3. **Fast** — Self-test completes in < 5 seconds.
-4. **Descriptive assertions** — Error messages explain what failed and why.
-5. **Test the invariant, not the implementation** — Assert that the sign payload equals `TxEnvelopeTempo.getSignPayload`, not that it equals a hardcoded hex string.
-
----
-
-## Module Dependencies
-
-```
-config.js          ← (no dependencies)
-  ↑
-dynamicWallet.js   ← config.js, @dynamic-labs-wallet/node-evm
-  ↑
-dynamicTempoAccount.js ← viem, viem/tempo (no Dynamic SDK import)
-  ↑
-mppClient.js       ← mppx, config.js
-  ↑
-run.js             ← all of the above
-```
-
-> **Key design decision:** `dynamicTempoAccount.js` does NOT import `@dynamic-labs-wallet/node-evm`. The Dynamic client is injected, and the two formatting helpers are inlined as byte-identical mirrors. This keeps the module usable on Windows and in any environment without the Neon binaries.
-
----
-
-## Security Guidelines
-
-### Never Commit Secrets
-
-- `.env` files
-- Private keys
-- API tokens
-- Wallet passwords
-- Key shares
-
-### Secret Management in Code
-
-```javascript
-// ✅ Good — read from environment
-const password = process.env.DYNAMIC_WALLET_PASSWORD;
-
-// ❌ Bad — hardcoded
-const password = 'my-secret-password';
-```
-
-### Error Messages
-
-```javascript
-// ✅ Good — descriptive, actionable
-throw new Error(
-  `Missing configuration: ${missing.join(', ')}. ` +
-  'Copy .env.example to .env and fill in your Dynamic values.'
-);
-
-// ❌ Bad — vague, unhelpful
+// bad
 throw new Error('config error');
 ```
 
-### Dependency Security
-
-- Pin exact versions in `package.json` where possible
-- Run `npm audit` before submitting PRs
-- Do not add dependencies without maintainer approval
+Route handlers return structured JSON — `{ error, message }` at minimum — rather than throwing, so the client gets something it can branch on.
 
 ---
 
-## Getting Help
+## Checks
 
-- **Documentation** — Check the files in `docs/` first
-- **Self-test** — Run `npm run self-test` to validate your environment
-- **Dry-run** — Run `npm run run:dry` to test the payment flow
-- **Issues** — Open a GitHub issue with the `question` label
+```bash
+npm run types:check    # tsc --noEmit — this one must pass
+npm run self-test      # offline signing and serialization assertions
+npm run lint           # see Known Issues; currently broken on TS 7
+```
+
+There is no test framework and no unit test suite. Verification is manual against a running server:
+
+```bash
+curl -s localhost:3000/api/health
+curl -s localhost:3000/api/weather                       # 402 with the price
+
+RECEIPT=$(curl -s -X POST localhost:3000/api/pay \
+  -H 'content-type: application/json' \
+  -d '{"amount":0.005,"endpoint":"/api/weather","agentId":"agt-0000"}' | jq -r .receipt)
+
+curl -s localhost:3000/api/weather -H "Payment-Receipt: $RECEIPT"   # 200
+curl -s localhost:3000/api/weather -H "Payment-Receipt: $RECEIPT"   # 402, replay
+```
+
+A payment change is not done until that sequence passes end to end, including the replay rejection on the last call.
+
+---
+
+## Pull requests
+
+### Branch names
+
+`feat/`, `fix/`, `docs/`, `refactor/`, `chore/`.
+
+### Commits
+
+[Conventional Commits](https://www.conventionalcommits.org/):
+
+```
+fix: decode transfer recipient from calldata instead of trusting receipt
+refactor: centralize endpoint prices in lib/pricing.ts
+docs: describe the three-call 402 handshake accurately
+```
+
+### Checklist
+
+- [ ] `npm run types:check` passes
+- [ ] Payment paths verified end to end if `lib/tempo/payment.ts` was touched
+- [ ] No new price literal — read `lib/pricing.ts`
+- [ ] New env var added to `.env.example` and to `content/docs/setup.mdx`
+- [ ] No secrets, keys, or receipt bodies in code or logs
+- [ ] Docs updated if behaviour changed — this is the failure mode worth guarding. The docs previously described `Payment-Required` headers the server never emitted, a signed receipt format the code does not produce, `npm run run` instead of `npm run cli`, Redis rate limiting that did not exist, and `src/ui/` paths from before the Next.js migration.
+
+---
+
+## Where bugs have hidden
+
+Worth knowing before you go looking.
+
+| Area | What went wrong before |
+|---|---|
+| `lib/pricing.ts` | Prices were written out in four places and drifted — the directory advertised $0.015 while the paywall charged $0.005, so agents overpaid 3x |
+| `lib/tempo/payment.ts` | Verification trusted the unsigned receipt's own `to` field. Anyone could mint a receipt naming a transfer to their own wallet and redeem it. Now the recipient is decoded from calldata and compared to `getSettlementAddress()` |
+| `lib/agent-graph.ts` | A pre-flight `verifyReceipt` consumed the replay guard, so the endpoint rejected the agent's own fresh payment. Tool args were never forwarded, so the agent paid for `city` and got whichever city it got |
+| `app/api/agent/fund/route.ts` | `resolveToken` sat outside the `try`, so an unknown token threw an unhandled rejection |
+| `app/api/chat/route.ts` | `req.json()` had no `.catch()`, so an empty body crashed the handler. Fixed — it now answers `400` |
+| `lib/store.ts` | Arrays grew without bound; the revenue history was seeded with fake values |
+| `components/hero-scene.tsx | Left a `requestAnimationFrame` loop running after unmount and double-initialised the WebGL context under StrictMode |
+
+---
+
+## Things marked as done that are not
+
+Flagged rather than quietly left in place. Fixing any of these is a welcome PR.
+
+| Location | Problem |
+|---|---|
+| `lib/agent-graph.ts` | `threadId` is accepted and returned, but `MemorySaver` checkpoints are never enumerated or evicted, so a repeated `threadId` does not actually resume the conversation its name implies |
+| `lib/tempo/signer.ts` | `toNumber()` still assumes 18 decimals for the native coin, which is why `getNativeBalance()` returns figures like `4.24e+57`. No route reports it any more — `/api/agent/status` reads the TIP-20 balance instead — but the function itself is still wrong for anyone who calls it |
+| `app/api/premium-data`, `app/api/weather` | Both fetch upstream *after* verifying the receipt, so an upstream failure means a caller has paid for a 502. Deliberate: verifying first is what stops unpaid callers costing a third party a request. The alternative — fetch first — turns the endpoints into an open proxy for a free API |
+| `package.json` | `typescript: ^7.0.2` breaks `npm run lint` |

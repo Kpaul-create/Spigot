@@ -72,7 +72,14 @@ const systemPrompt = [
 ].join('\n');
 
 export async function POST(req: Request, ctx: RouteContext<"/api/chat">) {
-  const reqJson = await req.json();
+  // Every other route in app/api/ guards this. Without the catch, an empty or
+  // non-JSON body rejected inside the handler and surfaced as a 500.
+  const reqJson = await req.json().catch(() => null);
+
+  if (!reqJson) {
+    return Response.json({ error: 'Invalid or missing JSON body' }, { status: 400 });
+  }
+
   const modelId = process.env.LLM_GATEWAY_MODEL ?? 'anthropic/claude-3.5-sonnet';
 
   const result = streamText({

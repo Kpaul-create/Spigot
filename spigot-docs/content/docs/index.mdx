@@ -7,68 +7,82 @@ description: Metered stablecoin tap for AI agents - overview and project layout.
 
 ## Project Overview
 
-Spigot is a pay-per-call API gateway that lets developers monetize AI agent endpoints using stablecoin micropayments. It combines three core technologies:
+Spigot is a pay-per-call API gateway that lets you charge per request in stablecoins. It is built on:
 
-- **Tempo** — a high-throughput L2 blockchain with native account abstraction and gas sponsorship
-- **Dynamic** — an MPC (Multi-Party Computation) wallet infrastructure for keyless, threshold-signed transactions
-- **MPP (Micropayment Protocol)** — a 402 Payment Required–based protocol for per-request settlement
+- **Tempo** — an L2 where a transfer is a TIP-20 `transfer` call; settles in seconds for fractions of a cent
+- **A signing strategy** — either a local `TEMPO_PRIVATE_KEY` or a Dynamic MPC wallet via `TEMPO_SIGNER=dynamic`
+- **HTTP 402** — the status code for "pay first"; the server holds the wallet and the client never signs anything
 
-The system enables API providers to charge fractions of a cent per call, with automatic payment receipt verification and on-chain settlement.
+Paid endpoints answer `402` until a receipt is attached. Each receipt is re-verified against Tempo before the endpoint serves anything.
+
+### What this is not
+
+Stated plainly, because several of these are easy to assume:
+
+- **The receipt is not a signature.** It is base64url JSON naming a transaction. Everything in it can be forged by whoever presents it, which is why verification re-reads the chain.
+- **Replay protection is per-process.** Redeemed hashes live in a `Map` in the server. A second instance would not see them.
+- **No rate limiting.** Nothing caps request volume. `/api/pay` is unmetered.
+- **No webhooks.** There is no outbound notification code.
+- **No database.** Transactions, usage logs and revenue history are in-memory and reset on restart.
 
 ## Architecture Diagram
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                        API CONSUMER (AI Agent)                       │
+│                        CLIENT (AI Agent)                            │
 │                                                                     │
-│   fetch('https://api.example.com/v1/generate', { ... })            │
+│   fetch('/api/weather')          → 402                               │
+│   fetch('/api/pay', {...})       → receipt                           │
+│   fetch('/api/weather',          → 200                               │
+│          { Payment-Receipt })                                        │
+│                                                                     │
+│   No wallet. No signing.                                            │
 └──────────────────────────────┬──────────────────────────────────────┘
-                               │ HTTP request
+                               │ HTTP
                                ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│                      API PROVIDER (Your Server)                     │
+│                    SPIGOT GATEWAY (this repo)                       │
 │                                                                     │
-│   ┌─────────────┐    ┌──────────────┐    ┌─────────────────────┐   │
-│   │   Route     │───▶│  MPP Guard   │───▶│  Business Logic     │   │
-│   │   Handler   │    │  Middleware  │    │  (LLM, compute…)    │   │
-│   └─────────────┘    └──────┬───────┘    └─────────────────────┘   │
-│                              │                                      │
-│                              │ 402 Payment Required                   │
-│                              │ + Payment-Required header             │
-│                              ▼                                      │
-│   ┌─────────────────────────────────────────────────────────────┐   │
-│   │  MPP Client (mppx)                                          │   │
-│   │  • Detects 402 challenge                                    │   │
-│   │  • Signs Tempo charge credential with MPC wallet            │   │
-│   │  • Retries request with Payment-Receipt header               │   │
-│   └──────────────────────────┬──────────────────────────────────┘   │
-└──────────────────────────────┼──────────────────────────────────────┘
-                               │ signed transaction
-                               ▼
+│   ┌──────────────────┐        ┌──────────────────────┐              │
+│   │  /api/weather    │───────▶│  verifyReceipt()     │              │
+│   │  /premium-data   │  402   │                      │              │
+│   └──────────────────┘        │  1. tx exists?       │              │
+│         │                     │  2. succeeded?       │              │
+│         │                     │  3. TIP-20 transfer? │              │
+│         │                     │  4. amount ≥ price?  │              │
+│         │                     │  5. recipient =      │              │
+│         │                     │     merchant?        │              │
+│         │                     │  6. endpoint match?  │              │
+│         │                     │  7. agent match?     │              │
+│         │                     │  8. not redeemed?    │              │
+│         │                     └──────────┬───────────┘              │
+│         │                                │                          │
+│         │                     ┌──────────▼───────────┐              │
+│         │                     │  settlePayment()     │              │
+│         │                     │  signs + broadcasts  │              │
+│         │                     └──────────┬───────────┘              │
+│         └────────────────────────────────│                          │
+└──────────────────────────────────────────┼──────────────────────────┘
+                                           │ TIP-20 transfer
+                                           ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│                        TEMPO L2 (Moderato Testnet)                  │
+│                   TEMPO L2 (Moderato Testnet)                       │
 │                                                                     │
-│   ┌──────────────┐  ┌──────────────┐  ┌──────────────────────────┐  │
-│   │  Sequencer   │  │  Fee Engine  │  │  Stablecoin Ledger       │  │
-│   │  (0x76 txs)  │  │  (TIP-20)    │  │  PathUSD / AlphaUSD /    │  │
-│   │              │  │              │  │  BetaUSD / ThetaUSD      │  │
-│   └──────────────┘  └──────────────┘  └──────────────────────────┘  │
+│   PathUSD  0x20c0…0000      AlphaUSD 0x20c0…0001                    │
+│   BetaUSD  0x20c0…0002      ThetaUSD 0x20c0…0003                    │
 │                                                                     │
-│   Chain ID: 42431    RPC: https://rpc.moderato.tempo.xyz            │
+│   Chain ID 42431     RPC https://rpc.moderato.tempo.xyz              │
 └─────────────────────────────────────────────────────────────────────┘
-                               │
-                               ▼
+                                           │
+                                           ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│                     DYNAMIC MPC WALLET SERVICE                      │
+│                    SIGNER (either of)                                │
 │                                                                     │
-│   ┌──────────────────┐  ┌──────────────────┐  ┌─────────────────┐  │
-│   │  Client Share    │  │  Server Share    │  │  Key Ceremony   │  │
-│   │  Service (backup)│  │  (Dynamic-held)  │  │  (TWO_OF_TWO)   │  │
-│   └──────────────────┘  └──────────────────┘  └─────────────────┘  │
-│                                                                     │
-│   • API Token → JWT authentication                                  │
-│   • Threshold ECDSA signatures (2-of-2)                             │
-│   • Client share encrypted with password, recoverable on demand      │
+│   TEMPO_PRIVATE_KEY              local key, broadcasts directly     │
+│   TEMPO_SIGNER=dynamic           Dynamic MPC, 2-of-2 threshold       │
+│                                  requires DYNAMIC_ENVIRONMENT_ID,   │
+│                                  DYNAMIC_API_TOKEN and              │
+│                                  DYNAMIC_WALLET_PASSWORD           │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -95,40 +109,43 @@ cp .env.example .env
 # Edit .env with your Dynamic credentials
 ```
 
-### Run the Walkthrough
+### Run the Gateway
 
 ```bash
-# Full five-step integration (Linux/macOS only)
-npm run run
-
-# Dry-run with local key (any platform)
-npm run run:dry
-
-# Offline self-test (no credentials needed)
-npm run self-test
+npm run dev            # http://localhost:3000
+npm run types:check    # tsc --noEmit
+npm run lint           # see Known Issues — currently broken
 ```
 
-### Verify It Works
+### CLI
 
 ```bash
-$ npm run self-test
-selfTest: all checks passed
-  wallet address  : 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
-  tempo tx (0x76) : 0x76f86c808252089420c00000000000000000000000000000000000008084deadbe…
-  eip-1559 tx     : 0x02f86c808252089470997970c51812dc3a010c7d01b50e0d17dc79c8…
-  signMessage sig : 0x1c2b3c…
-  signTypedData   : 0x4d5e6f…
+npm run self-test      # offline, no credentials needed
+npm run cli:dry        # local private key, full flow
+npm run cli            # Dynamic MPC signing against Moderato
 ```
+
+### Check it works
+
+```bash
+$ curl -s localhost:3000/api/health
+{"status":"ok","timestamp":"2026-10-02T15:11:59.718Z"}
+
+$ curl -s localhost:3000/api/pay
+{"configured":true,"address":"0x19E7E376…","chainId":42431,…}
+```
+
+`configured: false` means no signer — see [Setup](/docs/setup).
 
 ## Documentation Index
 
 | Document | Description |
 |---|---|
-| [API Reference](./API.md) | REST endpoints, authentication, error codes, WebSocket events |
-| [Architecture](./ARCHITECTURE.md) | System design, data flow, security model, scalability |
-| [Setup & Deployment](./SETUP.md) | Installation, environment variables, Docker, cloud deployment |
-| [Payments](./PAYMENTS.md) | 402 payment flow, integration examples, webhooks, testing |
-| [Contributing](./CONTRIBUTING.md) | Code style, PR process, development workflow |
+| [API Reference](/docs/api) | Every route, the 402 handshake, error codes |
+| [Architecture](/docs/architecture) | Data flow, verification order, known limits |
+| [Setup](/docs/setup) | Install, environment variables, deployment |
+| [Payments](/docs/payments) | Receipt format, verification, integration examples |
+| [Contributing](/docs/contributing) | Code style, PR process, workflow |
 
 ## Feature List
 

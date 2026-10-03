@@ -1,82 +1,41 @@
 'use client';
 
-import { useState, useEffect, useRef, FormEvent } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { HeroScene } from '@/components/hero-scene';
-
-const ENDPOINTS = [
-  { name: 'Flux Image Gen', provider: 'Pixelworks', category: 'Media', price: 0.04 },
-  { name: 'News Summarizer', provider: 'Digestly', category: 'AI', price: 0.01 },
-  { name: 'Sentiment API', provider: 'Pulse Labs', category: 'Data', price: 0.002 },
-  { name: 'GPU Burst Compute', provider: 'Nimbus', category: 'Compute', price: 0.15 },
-  { name: 'FX Rates Feed', provider: 'Ledgerly', category: 'Finance', price: 0.001 },
-  { name: 'Web Search Tool', provider: 'Query Co', category: 'AI', price: 0.005 },
-];
-
-const AGENT_IDS = ['agt-7f3a', 'agt-2b91', 'agt-9c04', 'agt-41de', 'agt-b6a8', 'agt-05f2'];
-
-interface FeedItem {
-  id: string;
-  agent: string;
-  address: string;
-  endpoint: string;
-  amount: number;
-  block: number;
-}
-
-/**
- * Generated once, when the row is created, and then stored on the item.
- *
- * This deliberately does *not* run during render: `Math.random()` in the render
- * body produces a different value on the server than on the client, which is a
- * hydration mismatch. Building the value at insertion time keeps the markup
- * deterministic across that boundary.
- */
-function randomAddress(): string {
-  const hex = () =>
-    Array.from({ length: 4 }, () => '0123456789abcdef'[Math.floor(Math.random() * 16)]).join('');
-  return `0x${hex()}…${hex()}`;
-}
+import { fetchTransactions, truncate } from '@/lib/api';
+import type { Transaction } from '@/lib/types';
 
 export default function HomePage() {
-  const [feedItems, setFeedItems] = useState<FeedItem[]>([]);
-  const [email, setEmail] = useState('');
-  const [consent, setConsent] = useState(false);
-  const [newsletterMsg, setNewsletterMsg] = useState('');
+  const [ledger, setLedger] = useState<Transaction[]>([]);
   const liveRef = useRef<HTMLDivElement>(null);
-  const blockRef = useRef(4871204);
 
-  // Live ledger feed
   useEffect(() => {
-    const addItem = () => {
-      const ep = ENDPOINTS[Math.floor(Math.random() * ENDPOINTS.length)];
-      blockRef.current += 1 + Math.floor(Math.random() * 3);
-      const item: FeedItem = {
-        id: `${Date.now()}-${Math.random()}`,
-        agent: AGENT_IDS[Math.floor(Math.random() * AGENT_IDS.length)],
-        address: randomAddress(),
-        endpoint: ep.name,
-        amount: ep.price,
-        block: blockRef.current,
-      };
-      setFeedItems((prev) => [item, ...prev].slice(0, 7));
-    };
+    let cancelled = false;
 
-    // Seed initial items
-    for (let i = 0; i < 6; i++) addItem();
-
-    const interval = setInterval(() => {
+    const load = async () => {
       if (document.hidden) return;
       if (liveRef.current) {
         const rect = liveRef.current.getBoundingClientRect();
-        if (rect.top < window.innerHeight && rect.bottom > 0) addItem();
+        if (rect.top >= window.innerHeight || rect.bottom <= 0) return;
       }
-    }, 1600);
 
-    return () => clearInterval(interval);
+      try {
+        const res = await fetchTransactions();
+        if (!cancelled) setLedger(res.transactions.slice(0, 7));
+      } catch {
+        // Keep the last successful list in place.
+      }
+    };
+
+    void load();
+    const interval = setInterval(() => void load(), 4000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
   }, []);
 
-  // Scroll reveal
   useEffect(() => {
     const observer = new IntersectionObserver(
       (entries) => {
@@ -94,299 +53,239 @@ export default function HomePage() {
     return () => observer.disconnect();
   }, []);
 
-  const handleNewsletter = (e: FormEvent) => {
-    e.preventDefault();
-    if (!/^\S+@\S+\.\S+$/.test(email)) {
-      setNewsletterMsg('Enter a valid email address.');
-      return;
-    }
-    if (!consent) {
-      setNewsletterMsg('Please accept the privacy policy to subscribe.');
-      return;
-    }
-    setNewsletterMsg('Thanks, you are subscribed.');
-    setEmail('');
-    setConsent(false);
-  };
+  const valueProps = [
+    {
+      title: 'Instant, auditable payments',
+      desc: 'Spend real stablecoin with a signed transfer and a receipt that is checked on-chain before data is served.',
+    },
+    {
+      title: 'Built for autonomous APIs',
+      desc: 'Give agents a clear call price, an HTTP 402 handshake, and a receipt to present when redeeming a request.',
+    },
+    {
+      title: 'Auditable settlement records',
+      desc: 'Clear call prices and transaction receipts make payments easier to inspect while you build your production controls.',
+    },
+  ];
+
+  const steps = [
+    {
+      step: '01',
+      title: 'Ask for the price',
+      desc: 'The client calls the endpoint with no receipt and receives a 402 response telling it the exact price and route.',
+    },
+    {
+      step: '02',
+      title: 'Settle on Tempo',
+      desc: 'The agent sends the on-chain payment and receives a signed receipt proving exactly what was paid for.',
+    },
+    {
+      step: '03',
+      title: 'Redeem the call',
+      desc: 'The same endpoint re-verifies the receipt against the chain and only then serves the data payload.',
+    },
+  ];
 
   return (
-    <div className="relative z-10">
-      {/* Hero — no local backdrop; the ambient gradient runs behind the whole page. */}
-      <section className="relative h-screen min-h-[620px] flex items-center overflow-hidden">
+    <div className="relative z-10 overflow-hidden">
+      <section className="hero-glow relative overflow-hidden">
         <HeroScene />
-        <div className="relative z-10 max-w-xl px-6 pl-[max(20px,6vw)]">
-          <div className="text-[var(--color-text-accent)] font-semibold text-sm tracking-widest uppercase mb-3">
-            Built on Tempo
-          </div>
-          <h1 className="text-[clamp(38px,6vw,68px)] font-extrabold leading-[1.05] tracking-tight mb-4">
-            AI agents for pay-per-call transactions.
-          </h1>
-          <p className="text-sm text-neutral-400 max-w-xl mx-auto mb-5">
-            Spigot provisions the micro-liquidity rails an agent needs, then settles sub-cent
-            payments autonomously on every LLM inference or tool call — no accounts, no API keys, no
-            human approving the tap.
-          </p>
-          <p className="text-[var(--color-text-secondary)] text-lg mb-6 max-w-md">
-            Turn any API into a pay-per-call service. Agents pay instantly, in any stablecoin, with
-            zero human in the loop.
-          </p>
-          <div className="flex flex-wrap gap-3">
-            <Link
-              href="/demo"
-              className="inline-flex items-center justify-center rounded-full bg-[var(--color-accent)] text-[var(--color-text-on-accent)] font-semibold px-6 py-3 hover:opacity-90 transition-opacity"
-            >
-              Try the live demo
-            </Link>
-            <Link
-              href="/docs"
-              className="inline-flex items-center justify-center rounded-full border border-[var(--color-border-control)] text-[var(--color-text-primary)] font-semibold px-6 py-3 hover:bg-[var(--color-bg-surface)] transition-colors"
-            >
-              Read the docs
-            </Link>
-          </div>
-        </div>
-      </section>
-
-      {/* Stats */}
-      <section className="max-w-5xl mx-auto px-5 py-16" data-reveal>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          {[
-            { stat: '100M+', label: 'x402 machine payments, industry-wide' },
-            { stat: '<1s', label: 'settlement on Tempo' },
-            { stat: '0', label: 'accounts or API keys required' },
-          ].map((s) => (
-            <div key={s.stat} className="glass p-7">
-              <span className="block text-4xl font-extrabold text-[var(--color-text-accent)]">
-                {s.stat}
-              </span>
-              <span className="text-[var(--color-text-secondary)] text-sm mt-1 block">{s.label}</span>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      {/* Problem */}
-      <section className="max-w-4xl mx-auto px-5 py-16" data-reveal>
-        <div className="text-[var(--color-text-accent)] font-semibold text-sm tracking-widest uppercase mb-3">
-          The problem
-        </div>
-        <h2 className="text-[clamp(28px,4vw,42px)] font-bold tracking-tight mb-4">
-          Autonomy stops at the checkout page.
-        </h2>
-        <p className="text-[var(--color-text-secondary)] max-w-2xl text-lg">
-          Agents can plan, browse and call tools on their own — but the moment they need to buy
-          something, they hit credit cards, API keys and human approval loops built for people, not
-          machines.
-        </p>
-      </section>
-
-      {/* 1. How It Works */}
-      <section className="max-w-4xl mx-auto px-5 py-16" data-reveal>
-        <div className="text-[var(--color-text-accent)] font-semibold text-sm tracking-widest uppercase mb-3">
-          How it works
-        </div>
-        <h2 className="text-[clamp(28px,4vw,42px)] font-bold tracking-tight mb-8">
-          Three steps. No humans.
-        </h2>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {[
-            {
-              step: 1,
-              title: 'Wallet authorization',
-              desc: 'The agent connects a Tempo MPC wallet. Spigot scopes the micro-liquidity rail to exactly the endpoints it is allowed to call.',
-            },
-            {
-              step: 2,
-              title: 'Stream metering',
-              desc: 'Each request is metered as it runs, so a call is priced by the work it actually consumed rather than a flat monthly key.',
-            },
-            {
-              step: 3,
-              title: 'Automated tap',
-              desc: 'When the metered balance crosses its threshold the wallet signs and settles sub-cent transfers with nobody in the loop.',
-            },
-          ].map((s) => (
-            <div key={s.step} className="glass p-7">
-              <div className="w-9 h-9 rounded-full bg-[var(--color-accent)] text-[var(--color-text-on-accent)] font-extrabold grid place-items-center mb-4">
-                {s.step}
+        <div className="relative z-10 mx-auto max-w-7xl px-5 pb-20 pt-20 lg:pb-28 lg:pt-24">
+          <div className="hero-grid grid items-center gap-10">
+            <div className="max-w-2xl lg:pl-[max(20px,6vw)]">
+              <div className="mb-4 inline-flex items-center rounded-full border border-[var(--color-border-control)] bg-[var(--color-bg-surface)] px-3 py-1 text-[11px] font-medium uppercase tracking-[0.2em] text-[var(--color-text-accent)] backdrop-blur-sm">
+                Payments for autonomous software
               </div>
-              <h3 className="font-bold text-lg mb-2">{s.title}</h3>
-              <p className="text-[var(--color-text-secondary)] text-sm leading-relaxed">{s.desc}</p>
+              <h1 className="text-[clamp(44px,6vw,88px)] font-black leading-[0.92] tracking-[-0.06em] text-[var(--color-text-primary)]">
+                Pay-per-call infrastructure for AI that works.
+              </h1>
+              <p className="mt-5 max-w-xl text-lg leading-8 text-[var(--color-text-secondary)] md:text-xl">
+                Spigot turns any API into a clear, machine-readable product. Agents pay for what they need,
+                in real time, with receipts you can audit and a commerce layer that feels native to software.
+              </p>
+              <div className="mt-8 flex flex-wrap gap-3">
+                <Link
+                  href="/agent"
+                  className="inline-flex items-center justify-center rounded-full bg-[var(--color-accent)] px-6 py-3 text-sm font-semibold text-[var(--color-text-on-accent)] shadow-[0_12px_32px_-18px_rgba(29,138,104,0.9)] transition-opacity hover:opacity-90"
+                >
+                  Launch the agent
+                </Link>
+                <Link
+                  href="/demo"
+                  className="inline-flex items-center justify-center rounded-full border border-[var(--color-border-control)] bg-[var(--color-bg-surface)] px-6 py-3 text-sm font-semibold text-[var(--color-text-primary)] transition-colors hover:bg-white/30"
+                >
+                  Try the live demo
+                </Link>
+              </div>
+              <div className="mt-8 flex flex-wrap gap-5 text-sm text-[var(--color-text-secondary)]">
+                <span className="inline-flex items-center gap-2"><span className="h-2 w-2 rounded-full bg-[var(--color-accent)]" />Receipts verified on-chain</span>
+                <span className="inline-flex items-center gap-2"><span className="h-2 w-2 rounded-full bg-[var(--color-accent)]" />Real stablecoin settlement</span>
+                <span className="inline-flex items-center gap-2"><span className="h-2 w-2 rounded-full bg-[var(--color-accent)]" />Simple API integration</span>
+              </div>
+            </div>
+
+            <div className="hidden lg:flex lg:justify-end">
+              <div className="w-full max-w-md rounded-[28px] border border-[var(--color-border-subtle)] bg-[var(--color-bg-surface)]/70 p-6 shadow-[0_35px_80px_-40px_rgba(12,26,18,0.55)] backdrop-blur-sm">
+                <div className="text-[11px] font-medium uppercase tracking-[0.24em] text-[var(--color-text-secondary)]">
+                  Example request
+                </div>
+                <div className="mt-6 space-y-4">
+                  <div className="rounded-2xl border border-[var(--color-border-subtle)] bg-[var(--color-bg-page)] p-4">
+                    <div className="text-[11px] uppercase tracking-[0.2em] text-[var(--color-text-secondary)]">weather endpoint</div>
+                    <div className="mt-2 text-3xl font-black tracking-[-0.05em] text-[var(--color-text-accent)]">$0.005</div>
+                    <div className="mt-1 text-sm text-[var(--color-text-secondary)]">Price returned before payment</div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3 text-sm">
+                    <div className="rounded-2xl border border-[var(--color-border-subtle)] bg-[var(--color-bg-page)] p-4">
+                      <div className="text-[var(--color-text-secondary)]">Handshake</div>
+                      <div className="mt-2 text-xl font-bold text-[var(--color-text-primary)]">402 → pay</div>
+                    </div>
+                    <div className="rounded-2xl border border-[var(--color-border-subtle)] bg-[var(--color-bg-page)] p-4">
+                      <div className="text-[var(--color-text-secondary)]">Then</div>
+                      <div className="mt-2 text-xl font-bold text-[var(--color-text-primary)]">Redeem</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="mx-auto max-w-6xl px-5 py-12 md:py-20" data-reveal>
+        <div className="mb-8 text-[11px] font-medium uppercase tracking-[0.24em] text-[var(--color-text-accent)]">
+          Why teams use it
+        </div>
+        <div className="grid gap-4 md:grid-cols-3">
+          {valueProps.map((item) => (
+            <div key={item.title} className="card card-hover p-7">
+              <h3 className="text-xl font-bold tracking-[-0.04em] text-[var(--color-text-primary)]">{item.title}</h3>
+              <p className="mt-3 text-sm leading-7 text-[var(--color-text-secondary)]">{item.desc}</p>
             </div>
           ))}
         </div>
       </section>
 
-      {/* 2. Live Ledger */}
-      <section className="max-w-4xl mx-auto px-5 py-16" data-reveal ref={liveRef}>
-        <div className="text-[var(--color-text-accent)] font-semibold text-sm tracking-widest uppercase mb-3">
-          Live ledger
+      <section className="mx-auto max-w-6xl px-5 py-12 md:py-20" data-reveal>
+        <div className="mb-8 text-[11px] font-medium uppercase tracking-[0.24em] text-[var(--color-text-accent)]">
+          Simple integration
         </div>
-        <h2 className="text-[clamp(28px,4vw,42px)] font-bold tracking-tight mb-2">Every call, settled.</h2>
-        <p className="text-[var(--color-text-secondary)] max-w-2xl mb-8">
-          A running slice of agent traffic: who called, what they hit, what it settled for, and the
-          block it confirmed in.
+        <div className="grid gap-4 md:grid-cols-3">
+          {steps.map((item) => (
+            <div key={item.step} className="card card-hover p-7">
+              <div className="mb-4 text-sm font-semibold uppercase tracking-[0.2em] text-[var(--color-text-accent)]">{item.step}</div>
+              <h3 className="text-2xl font-bold tracking-[-0.05em] text-[var(--color-text-primary)]">{item.title}</h3>
+              <p className="mt-3 text-sm leading-7 text-[var(--color-text-secondary)]">{item.desc}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="mx-auto max-w-5xl px-5 py-12 md:py-20" data-reveal>
+        <div className="card p-6 md:p-8">
+          <div className="mb-5 text-[11px] font-medium uppercase tracking-[0.24em] text-[var(--color-text-accent)]">
+            Ready to ship
+          </div>
+          <h2 className="text-[clamp(28px,4vw,44px)] font-black leading-[1.02] tracking-[-0.05em] text-[var(--color-text-primary)]">
+            Put a price on every tool call and give your agent a clean checkout.
+          </h2>
+          <p className="mt-4 max-w-2xl text-base leading-8 text-[var(--color-text-secondary)]">
+            Spigot is designed for real products: clear prices, auditable settlement, easy tool registration,
+            and a way to let autonomous software pay without fragile approval workflows.
+          </p>
+          <pre className="mt-8 overflow-x-auto rounded-2xl border border-[var(--color-border-subtle)] bg-[#0d120e] p-4 text-sm leading-7 text-[#d9f9e8]">
+            <code>{`curl -i http://localhost:3000/api/weather?city=Oslo
+# 402 Payment Required {"price":0.005,"currency":"USD"}
+
+curl -X POST http://localhost:3000/api/pay \
+  -H 'content-type: application/json' \
+  -d '{"amount":0.005,"endpoint":"/api/weather"}'
+
+curl -H 'Payment-Receipt: <receipt>' http://localhost:3000/api/weather?city=Oslo`}</code>
+          </pre>
+        </div>
+      </section>
+
+      <section className="max-w-4xl mx-auto px-5 py-12 md:py-20" data-reveal ref={liveRef}>
+        <div className="mb-5 text-[11px] font-medium uppercase tracking-[0.24em] text-[var(--color-text-accent)]">
+          Settlement ledger
+        </div>
+        <h2 className="text-[clamp(28px,4vw,42px)] font-black leading-[1.05] tracking-[-0.05em] text-[var(--color-text-primary)]">
+          Every call, settled and visible.
+        </h2>
+        <p className="mt-3 max-w-2xl text-base leading-8 text-[var(--color-text-secondary)]">
+          A live, process-local stream of the payments this instance is actually handling. The data is real,
+          auditable, and designed to make agent spending feel transparent rather than magical.
         </p>
 
-        <div className="glass overflow-hidden">
-          <div className="grid grid-cols-[1fr_auto] gap-3 px-5 py-2.5 text-[0.7rem] uppercase tracking-widest text-[var(--color-text-secondary)] border-b border-[var(--color-border-subtle)] sm:grid-cols-[auto_1fr_auto_auto]">
-            <span>Agent</span>
+        <div className="mt-8 card overflow-hidden">
+          <div className="grid grid-cols-[1fr_auto] gap-3 border-b border-[var(--color-border-subtle)] px-5 py-3 text-[0.7rem] uppercase tracking-[0.18em] text-[var(--color-text-secondary)] sm:grid-cols-[auto_1fr_auto_auto]">
+            <span>Payer</span>
             <span className="hidden sm:block">Endpoint</span>
             <span className="text-right">Settled</span>
             <span className="hidden sm:block text-right">Block</span>
           </div>
 
           <div className="divide-y divide-[var(--color-border-subtle)]">
-            {feedItems.map((item) => (
-              <div
-                key={item.id}
-                className="grid grid-cols-[1fr_auto] gap-3 px-5 py-3 text-sm items-center animate-[feedSlideIn_0.4s_ease-out] sm:grid-cols-[auto_1fr_auto_auto]"
-              >
-                <span className="flex items-center gap-2 min-w-0">
-                  <span className="w-2 h-2 rounded-full bg-[var(--color-accent)] shadow-[0_0_8px_var(--color-accent)] flex-none" />
-                  <code className="text-xs text-[var(--color-text-secondary)]">{item.agent}</code>
-                </span>
-                <span className="hidden sm:block truncate text-[var(--color-text-primary)]">
-                  {item.endpoint}
-                  <span className="text-[var(--color-text-secondary)] text-xs ml-2 font-mono">
-                    {item.address}
-                  </span>
-                </span>
-                <span className="font-semibold text-[var(--color-text-accent)] text-right tabular-nums">
-                  ${item.amount.toFixed(3)}
-                </span>
-                <span className="hidden sm:block text-right text-xs text-[var(--color-text-secondary)] tabular-nums">
-                  #{item.block.toLocaleString()} <span className="text-[var(--color-text-accent)]">✓</span>
-                </span>
+            {ledger.length === 0 ? (
+              <div className="px-5 py-8 text-sm text-[var(--color-text-secondary)]">
+                No settlements yet on this instance. Trigger the live demo to populate the ledger.
               </div>
-            ))}
+            ) : (
+              ledger.map((item) => (
+                <div
+                  key={`${item.id}-${item.timestamp}`}
+                  className="grid grid-cols-[1fr_auto] gap-3 px-5 py-3 text-sm sm:grid-cols-[auto_1fr_auto_auto]"
+                >
+                  <span className="flex items-center gap-2 min-w-0">
+                    <span
+                      className={`h-2 w-2 rounded-full ${
+                        item.status === 'completed' ? 'bg-[var(--color-accent)]' : 'bg-red-500'
+                      }`}
+                    />
+                    <code className="text-xs text-[var(--color-text-secondary)]">
+                      {item.payer ? truncate(item.payer, 8, 6) : '—'}
+                    </code>
+                  </span>
+                  <span className="hidden sm:block truncate text-[var(--color-text-primary)]">
+                    {item.endpoint}
+                    {item.txHash && (
+                      <span className="ml-2 text-xs text-[var(--color-text-secondary)] font-mono">
+                        {truncate(item.txHash, 8, 6)}
+                      </span>
+                    )}
+                  </span>
+                  <span className="font-semibold text-[var(--color-text-accent)] text-right tabular-nums">
+                    {item.status === 'completed' ? '' : `${item.status} · `}{item.amount.toFixed(3)} {item.currency}
+                  </span>
+                  <span className="hidden sm:block text-right text-xs text-[var(--color-text-secondary)] tabular-nums">
+                    {item.blockNumber ? `#${Number(item.blockNumber).toLocaleString()}` : '—'}
+                    {item.status === 'completed' && <span className="text-[var(--color-text-accent)]"> ✓</span>}
+                  </span>
+                </div>
+              ))
+            )}
           </div>
         </div>
       </section>
 
-      {/* 3. Why on Tempo */}
-      <section className="max-w-4xl mx-auto px-5 py-16" data-reveal>
-        <div className="text-[var(--color-text-accent)] font-semibold text-sm tracking-widest uppercase mb-3">
-          Why on Tempo
-        </div>
-        <h2 className="text-[clamp(28px,4vw,42px)] font-bold tracking-tight mb-8">
-          A chain built for machine payments.
+      <section className="mx-auto max-w-4xl px-5 pb-20 pt-8 text-center" data-reveal>
+        <h2 className="text-[clamp(30px,4vw,52px)] font-black leading-[1.04] tracking-[-0.05em] text-[var(--color-text-primary)]">
+          Make your APIs worth paying for.
         </h2>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {[
-            {
-              title: 'Sub-second finality',
-              desc: 'Pay-then-retry reads as synchronous to the calling agent — no polling loop, no orphaned payments.',
-            },
-            {
-              title: 'Zero gas spikes',
-              desc: "Native account abstraction and gas sponsorship keep a micro-transfer as cheap as a full block.",
-            },
-            {
-              title: 'Optimized throughput',
-              desc: 'Payment lanes and memos ride along with every settlement, tuned for autonomous machine-to-machine micro-transfers.',
-            },
-          ].map((card) => (
-            <div key={card.title} className="glass p-7">
-              <h3 className="font-bold text-lg mb-2">{card.title}</h3>
-              <p className="text-[var(--color-text-secondary)] text-sm leading-relaxed">{card.desc}</p>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      {/* Quickstart */}
-      <section className="max-w-4xl mx-auto px-5 py-16" data-reveal>
-        <div className="text-[var(--color-text-accent)] font-semibold text-sm tracking-widest uppercase mb-3">
-          Quickstart
-        </div>
-        <h2 className="text-[clamp(28px,4vw,42px)] font-bold tracking-tight mb-6">One line of middleware.</h2>
-        <pre className="glass p-6 overflow-x-auto text-sm font-mono">
-          <code>{`app.get("/api/premium-data",
-  spigot.charge({ amount: "0.01" }),
-  (req, res) => res.json({ data: "the good stuff" }));`}</code>
-        </pre>
-      </section>
-
-      {/* CTA */}
-      <section className="max-w-4xl mx-auto px-5 py-16 text-center" data-reveal>
-        <h2 className="text-[clamp(28px,4vw,42px)] font-bold tracking-tight mb-6">Open the tap.</h2>
-        <div className="flex flex-wrap justify-center gap-3">
+        <div className="mt-8 flex flex-wrap justify-center gap-3">
           <Link
             href="/dashboard"
-            className="inline-flex items-center justify-center rounded-full bg-[var(--color-accent)] text-[var(--color-text-on-accent)] font-semibold px-6 py-3 hover:opacity-90 transition-opacity"
+            className="inline-flex items-center justify-center rounded-full bg-[var(--color-accent)] px-6 py-3 text-sm font-semibold text-[var(--color-text-on-accent)] hover:opacity-90"
           >
             Open dashboard
           </Link>
           <Link
-            href="/directory"
-            className="inline-flex items-center justify-center rounded-full border border-[var(--color-border-control)] text-[var(--color-text-primary)] font-semibold px-6 py-3 hover:bg-[var(--color-bg-surface)] transition-colors"
+            href="/docs"
+            className="inline-flex items-center justify-center rounded-full border border-[var(--color-border-control)] bg-[var(--color-bg-surface)] px-6 py-3 text-sm font-semibold text-[var(--color-text-primary)] hover:bg-white/30"
           >
-            Browse directory
+            Read the docs
           </Link>
-        </div>
-      </section>
-
-      {/* Newsletter */}
-      <section className="max-w-2xl mx-auto px-5 py-16" data-reveal>
-        <div className="glass p-8">
-          <div className="text-[var(--color-text-accent)] font-semibold text-sm tracking-widest uppercase mb-3">
-            Newsletter
-          </div>
-          <h2 className="text-2xl font-bold tracking-tight mb-2">Follow the build.</h2>
-          <p className="text-[var(--color-text-secondary)] text-sm mb-6">
-            Occasional updates on Spigot, Tempo and agent payments. No spam, unsubscribe any time.
-          </p>
-          <form onSubmit={handleNewsletter} noValidate>
-            <div className="flex gap-3 mb-4">
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@example.com"
-                required
-                autoComplete="email"
-                aria-label="Email address"
-                className="flex-1 min-w-0 bg-[var(--color-bg-page)] text-[var(--color-text-primary)] border border-[var(--color-border-control)] rounded-lg px-3 py-2 text-sm"
-              />
-              <button
-                type="submit"
-                className="inline-flex items-center justify-center rounded-full bg-[var(--color-accent)] text-[var(--color-text-on-accent)] font-semibold text-sm px-5 py-2 hover:opacity-90 transition-opacity"
-              >
-                Subscribe
-              </button>
-            </div>
-            <label className="flex gap-2.5 items-start text-sm text-[var(--color-text-secondary)] mb-3">
-              <input
-                type="checkbox"
-                checked={consent}
-                onChange={(e) => setConsent(e.target.checked)}
-                className="mt-1 flex-none"
-              />
-              <span>
-                I agree to receive email updates and have read the{' '}
-                <Link href="/privacy" className="underline">
-                  privacy policy
-                </Link>
-                .
-              </span>
-            </label>
-            <p
-              className="text-sm text-[var(--color-text-secondary)] min-h-[1.6em] m-0"
-              role="status"
-              aria-live="polite"
-            >
-              {newsletterMsg}
-            </p>
-          </form>
-          <p className="text-xs text-[var(--color-text-secondary)] mt-4 mb-0">
-            We collect your email address only, to send these updates. We never sell it or share it
-            for advertising. Details in the{' '}
-            <Link href="/privacy" className="underline">
-              privacy policy
-            </Link>
-            .
-          </p>
         </div>
       </section>
     </div>

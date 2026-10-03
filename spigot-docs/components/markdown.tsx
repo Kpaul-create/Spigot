@@ -106,11 +106,33 @@ export function Markdown({ text }: { text: string }) {
   );
 }
 
+/**
+ * Parse cache, keyed by the full markdown source.
+ *
+ * This is an unbounded module-level `Map`, so on a long chat session every
+ * distinct assistant message kept its parsed React tree alive for the life of the
+ * page. Evicting oldest-first past a small bound is safe here because the cache
+ * is purely a memo: a miss just re-parses.
+ */
+const CACHE_LIMIT = 40;
 const cache = new Map<string, Promise<ReactNode>>();
 
 function Renderer({ text }: { text: string }) {
-  const result = cache.get(text) ?? processor.process(text);
-  cache.set(text, result);
+  const cached = cache.get(text);
+  if (cached) {
+    // Refresh recency so a message that is still on screen is not evicted by
+    // newer traffic.
+    cache.delete(text);
+    cache.set(text, cached);
+  } else {
+    cache.set(text, processor.process(text));
+  }
 
-  return use(result);
+  while (cache.size > CACHE_LIMIT) {
+    const oldest = cache.keys().next();
+    if (oldest.done) break;
+    cache.delete(oldest.value);
+  }
+
+  return use(cache.get(text)!);
 }

@@ -15,11 +15,16 @@ export function HeroScene() {
 
   useEffect(() => {
     let cleanup: (() => void) | undefined;
+    let disposed = false;
 
     async function init() {
       const THREE = await import('three');
       const canvas = canvasRef.current;
-      if (!canvas) return;
+      // The dynamic import above is async, so the component can unmount while it
+      // is still in flight. A renderer built after that point never reaches
+      // `cleanup`, leaking a WebGL context and its rAF loop. StrictMode mounts
+      // the effect twice in dev, which is the same path.
+      if (!canvas || disposed) return;
 
       // --- Renderer & Camera ---
       const renderer = new THREE.WebGLRenderer({
@@ -409,7 +414,14 @@ export function HeroScene() {
       scene.add(tokensGroup);
 
       const tokenMeshes: Mesh[] = [];
-      const tokenStates: { active: boolean; vel: Vector3; rotVel: Vector3; bounced: boolean }[] = [];
+      const tokenStates: {
+        active: boolean;
+        vel: Vector3;
+        rotVel: Vector3;
+        bounced: boolean;
+        /** Second contact: falling through the basin rather than bouncing on it. */
+        draining: boolean;
+      }[] = [];
 
       for (let i = 0; i < TOKEN_COUNT; i++) {
         const mesh = new THREE.Mesh(coinGeo, coinMaterials);
@@ -423,6 +435,7 @@ export function HeroScene() {
           vel: new THREE.Vector3(),
           rotVel: new THREE.Vector3(),
           bounced: false,
+          draining: false,
         });
       }
 
@@ -447,6 +460,7 @@ export function HeroScene() {
 
         state.active = true;
         state.bounced = false;
+        state.draining = false;
         state.vel.set(
           (Math.random() - 0.5) * 0.08,
           -0.8 - Math.random() * 0.4,
@@ -461,11 +475,20 @@ export function HeroScene() {
         nextTokenIdx = (nextTokenIdx + 1) % TOKEN_COUNT;
       }
 
-      // --- Collection Reservoir + Impact Effects ---
+      // --- Collection Reservoir ---
       // Coins used to fall straight out of frame, so the drop had no readable
       // landing. They now catch on a shallow basin parked just inside the
-      // bottom of the viewport, and every contact fires a synchronised ripple,
-      // particle splash and micro-rebound.
+      // bottom of the viewport.
+      //
+      // The basin is deliberately inert. It previously drove its own opacity
+      // from a `basinPulse` that `emitImpact` reset to 1 on every landing,
+      // while coins arrive at 5/second and the pulse decays at 2.2/second — so
+      // it decayed only 0.44 between hits and never got below 0.56. The ring was
+      // permanently at 56-100% opacity, flickering at the landing rate, which
+      // read as a glitch rather than a highlight. The eight concentric ripples
+      // were worse: each lived 0.59s against a 0.2s arrival interval, so all
+      // eight slots were occupied at once, permanently. A fixed surface needs
+      // no per-frame update at all.
 
       const RESERVOIR_Y = -1.34;
 
@@ -474,11 +497,13 @@ export function HeroScene() {
       scene.add(reservoir);
 
       const basinGeo = new THREE.TorusGeometry(0.5, 0.012, 10, 72);
+      // Additive blending over a light page background washes the ring out to
+      // near-nothing in day mode, so it is drawn as a plain translucent stroke
+      // and picks up its colour from the theme token the hero already uses.
       const basinMat = new THREE.MeshBasicMaterial({
         color: 0x10b981,
         transparent: true,
-        opacity: 0.3,
-        blending: THREE.AdditiveBlending,
+        opacity: 0.28,
         depthWrite: false,
       });
       const basin = new THREE.Mesh(basinGeo, basinMat);
@@ -489,8 +514,7 @@ export function HeroScene() {
       const discMat = new THREE.MeshBasicMaterial({
         color: 0x059669,
         transparent: true,
-        opacity: 0.09,
-        blending: THREE.AdditiveBlending,
+        opacity: 0.07,
         depthWrite: false,
         side: THREE.DoubleSide,
       });
@@ -499,105 +523,15 @@ export function HeroScene() {
       disc.position.y = -0.002;
       reservoir.add(disc);
 
-      // Pooled expanding rings. Pre-allocated so a burst of impacts never
-      // allocates mid-frame.
-      const RIPPLE_COUNT = 8;
-      const rippleGeo = new THREE.RingGeometry(0.42, 0.5, 48);
-      const rippleMeshes: Mesh[] = [];
-      const rippleMats: MeshBasicMaterial[] = [];
-      const rippleLife: number[] = [];
-
-      for (let i = 0; i < RIPPLE_COUNT; i++) {
-        const mat = new THREE.MeshBasicMaterial({
-          color: 0x34d399,
-          transparent: true,
-          opacity: 0,
-          blending: THREE.AdditiveBlending,
-          depthWrite: false,
-          side: THREE.DoubleSide,
-        });
-        const mesh = new THREE.Mesh(rippleGeo, mat);
-        mesh.rotation.x = -Math.PI / 2;
-        mesh.visible = false;
-        reservoir.add(mesh);
-        rippleMeshes.push(mesh);
-        rippleMats.push(mat);
-        rippleLife.push(0);
-      }
-      let nextRipple = 0;
-
-      // Splash particles in a single Points draw call.
-      const SPLASH_PER_IMPACT = 12;
-      const SPLASH_COUNT = 96;
-      const splashPos = new Float32Array(SPLASH_COUNT * 3);
-      const splashCol = new Float32Array(SPLASH_COUNT * 3);
-      const splashVel: Vector3[] = [];
-      const splashLife = new Float32Array(SPLASH_COUNT);
-
-      for (let i = 0; i < SPLASH_COUNT; i++) {
-        splashPos[i * 3 + 1] = -9999;
-        splashVel.push(new THREE.Vector3());
-      }
-
-      const splashGeo = new THREE.BufferGeometry();
-      splashGeo.setAttribute('position', new THREE.BufferAttribute(splashPos, 3));
-      splashGeo.setAttribute('color', new THREE.BufferAttribute(splashCol, 3));
-
-      const splashMat = new THREE.PointsMaterial({
-        size: 0.055,
-        vertexColors: true,
-        transparent: true,
-        opacity: 0.95,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-        sizeAttenuation: true,
-      });
-      const splash = new THREE.Points(splashGeo, splashMat);
-      splash.frustumCulled = false;
-      scene.add(splash);
-      let nextSplash = 0;
-
-      const GOLD = new THREE.Color(0xfcd34d);
-      const EMERALD = new THREE.Color(0x34d399);
-      const scratchColor = new THREE.Color();
-      let basinPulse = 0;
-
-      function emitImpact(x: number, z: number) {
-        basinPulse = 1;
-
-        const ripple = rippleMeshes[nextRipple];
-        ripple.position.set(x, 0.002, z);
-        ripple.scale.set(0.35, 0.35, 0.35);
-        ripple.visible = true;
-        rippleLife[nextRipple] = 1;
-        rippleMats[nextRipple].opacity = 0.85;
-        nextRipple = (nextRipple + 1) % RIPPLE_COUNT;
-
-        for (let k = 0; k < SPLASH_PER_IMPACT; k++) {
-          const i = nextSplash;
-          nextSplash = (nextSplash + 1) % SPLASH_COUNT;
-          const i3 = i * 3;
-
-          splashPos[i3] = x;
-          splashPos[i3 + 1] = RESERVOIR_Y + 0.02;
-          splashPos[i3 + 2] = z;
-
-          const angle = Math.random() * Math.PI * 2;
-          const spread = 0.9 + Math.random() * 1.5;
-          splashVel[i].set(
-            Math.cos(angle) * spread * 0.55,
-            1.5 + Math.random() * 1.9,
-            Math.sin(angle) * spread * 0.55,
-          );
-          splashLife[i] = 1;
-
-          scratchColor.copy(Math.random() > 0.45 ? GOLD : EMERALD);
-          splashCol[i3] = scratchColor.r;
-          splashCol[i3 + 1] = scratchColor.g;
-          splashCol[i3 + 2] = scratchColor.b;
-        }
-        splashGeo.attributes.color.needsUpdate = true;
-      }
+      // Coins used to despawn the instant they touched the basin a second time,
+      // which meant every coin vanished in mid-air 0.5s after it was released,
+      // roughly a coin-diameter above the ring. They now rest on the basin and
+      // are retired below it, so the drop reads as filling something.
+      //
+      // Retiring below rather than at the surface is what keeps the pool from
+      // looking like it is being emptied by an invisible hand: the coin sinks
+      // out of sight the same way it arrived.
+      const RETIRE_Y = RESERVOIR_Y - 0.55;
 
       // --- Parallax Tracking ---
       let targetX = 0;
@@ -615,7 +549,7 @@ export function HeroScene() {
         const z = narrow ? Math.max(5.4, 5.3 / camera.aspect) : 5.4;
         const H = 0.6887 * z;
         const W = H * camera.aspect;
-        return { z, x: -0.4 + W * (narrow ? 0.06 : 0.27), y: narrow ? -H * 0.2 : 0 };
+        return { z, x: -0.1 + W * (narrow ? 0.42 : 0.34), y: narrow ? -H * 0.2 : 0 };
       }
 
       // THREE.Clock is deprecated in favour of Timer, which separates "advance
@@ -623,13 +557,16 @@ export function HeroScene() {
       // reports the same delta no matter how many times it is read per frame.
       const timer = new THREE.Timer();
       let spigotOn = true;
+      let frame = 0;
 
       function animate(timestamp?: number) {
         // Schedule the next frame *before* the visibility bail-out. Returning
         // early here would permanently kill the loop once the hero scrolls out
         // of view, and the observer can never restart it.
-        requestAnimationFrame(animate);
-        if (!spigotOn) return;
+        frame = requestAnimationFrame(animate);
+        // `disposed` is checked after the reschedule so the loop's exit
+        // condition matches its continuation condition.
+        if (!spigotOn || disposed) return;
         timer.update(timestamp);
         const dt = Math.min(timer.getDelta(), 0.1);
 
@@ -668,15 +605,29 @@ export function HeroScene() {
             mesh.position.y = RESERVOIR_Y;
 
             if (!state.bounced) {
-              // First contact: shockwave + splash, then a short damped rebound
-              // so the coin reads as having weight rather than being deleted.
+              // First contact: one short damped rebound, so the coin reads as
+              // having weight rather than being deleted on arrival.
               state.bounced = true;
               state.vel.y = Math.abs(state.vel.y) * 0.22;
               state.vel.x *= 0.45;
               state.vel.z *= 0.45;
               state.rotVel.multiplyScalar(0.4);
-              emitImpact(mesh.position.x, mesh.position.z);
-            } else {
+            } else if (!state.draining) {
+              // Second contact: stop dead, rest on the basin, then sink out of
+              // frame once the pool is deep enough to hide the withdrawal.
+              state.draining = true;
+              state.vel.set(0, 0, 0);
+              state.rotVel.multiplyScalar(0.25);
+            }
+          }
+
+          if (state.draining) {
+            state.vel.y -= 10.5 * dt;
+            mesh.position.addScaledVector(state.vel, dt);
+            mesh.rotation.x += state.rotVel.x * dt;
+            mesh.rotation.y += state.rotVel.y * dt;
+
+            if (mesh.position.y <= RETIRE_Y) {
               state.active = false;
               mesh.visible = false;
               mesh.scale.set(0, 0, 0);
@@ -684,39 +635,6 @@ export function HeroScene() {
             }
           }
         }
-
-        // --- Impact effect animation ---
-        for (let i = 0; i < RIPPLE_COUNT; i++) {
-          if (rippleLife[i] <= 0) continue;
-          rippleLife[i] = Math.max(0, rippleLife[i] - dt * 1.7);
-          const progress = 1 - rippleLife[i];
-          const s = 0.35 + progress * 1.5;
-          rippleMeshes[i].scale.set(s, s, s);
-          rippleMats[i].opacity = rippleLife[i] * 0.8;
-          if (rippleLife[i] <= 0) rippleMeshes[i].visible = false;
-        }
-
-        for (let i = 0; i < SPLASH_COUNT; i++) {
-          if (splashLife[i] <= 0) continue;
-          splashLife[i] = Math.max(0, splashLife[i] - dt * 1.5);
-
-          const i3 = i * 3;
-          const v = splashVel[i];
-          v.y -= 9.5 * dt;
-          splashPos[i3] += v.x * dt;
-          splashPos[i3 + 1] += v.y * dt;
-          splashPos[i3 + 2] += v.z * dt;
-
-          if (splashLife[i] <= 0 || splashPos[i3 + 1] < RESERVOIR_Y) {
-            splashLife[i] = 0;
-            splashPos[i3 + 1] = -9999;
-          }
-        }
-        splashGeo.attributes.position.needsUpdate = true;
-
-        basinPulse = Math.max(0, basinPulse - dt * 2.2);
-        basinMat.opacity = 0.3 + basinPulse * 0.5;
-        discMat.opacity = 0.09 + basinPulse * 0.16;
 
         renderer.render(scene, camera);
       }
@@ -741,6 +659,11 @@ export function HeroScene() {
       observer.observe(canvas);
 
       cleanup = () => {
+        // Stop the loop before disposing what it draws into. `animate`
+        // reschedules itself unconditionally, so without this the last frame
+        // would keep a disposed renderer alive for the life of the page.
+        disposed = true;
+        cancelAnimationFrame(frame);
         window.removeEventListener('mousemove', onMouseMove);
         window.removeEventListener('resize', onResize);
         observer.disconnect();
@@ -748,23 +671,23 @@ export function HeroScene() {
         renderer.dispose();
         pmrem.dispose();
 
-        // Release the impact-effect resources explicitly. The rest of the scene
+        // Release the reservoir's resources explicitly. The rest of the scene
         // relies on the renderer going away with the canvas, but these are
         // still reachable here, and StrictMode mounts the effect twice in dev.
         basinGeo.dispose();
         basinMat.dispose();
         discGeo.dispose();
         discMat.dispose();
-        rippleGeo.dispose();
-        for (const mat of rippleMats) mat.dispose();
-        splashGeo.dispose();
-        splashMat.dispose();
       };
     }
 
     init();
 
     return () => {
+      // Set unconditionally: if `init` is still awaiting `import('three')`,
+      // `cleanup` is undefined and this is the only thing that stops it from
+      // building a scene nobody will ever tear down.
+      disposed = true;
       cleanup?.();
     };
   }, []);

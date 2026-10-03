@@ -3,63 +3,69 @@
  *
  * Imported from the root layout so every route (marketing, directory,
  * dashboard, demo, agent) shares one palette.
- *
- * Theming is driven by next-themes (via fumadocs' RootProvider), which sets
- * `class="light"` or `class="dark"` on <html> and syncs across tabs. Day is the
- * default. The `.theme-light` / `.theme-dark` aliases are kept so the original
- * prototype's markup still resolves against the same tokens.
  */
 
 :root,
 .theme-light {
-  --color-bg-page: #f5f8f4;
-  --color-bg-surface: #ffffff;
-  --color-bg-nav: rgba(245, 248, 244, 0.86);
-  --color-text-primary: #0d1a12;
-  --color-text-secondary: #46594c;
-  --color-text-accent: #047857;
-  --color-text-on-accent: #04140a;
-  --color-accent: #059669;
-  --color-border-subtle: #d5e2d9;
-  --color-border-control: #6b8272;
-  --color-glow-center: rgba(5, 150, 105, 0.13);
-  --color-focus-ring: #047857;
+  --color-bg-page: #f4efe8;
+  --color-bg-surface: rgba(255, 255, 255, 0.72);
+  --color-bg-nav: rgba(244, 239, 232, 0.86);
+  --color-text-primary: #1e1a17;
+  --color-text-secondary: #5d564f;
+  --color-text-accent: #1f6f52;
+  --color-text-on-accent: #f8f5f1;
+  --color-accent: #1d8a68;
+  --color-border-subtle: rgba(81, 66, 56, 0.12);
+  --color-border-control: rgba(31, 111, 82, 0.35);
+  --color-glow-center: rgba(29, 138, 104, 0.2);
+  --color-focus-ring: #1d8a68;
 
   color-scheme: light;
 }
 
 .theme-dark,
 .dark {
-  --color-bg-page: #0a0f0c;
-  --color-bg-surface: #111814;
-  --color-bg-nav: rgba(10, 15, 12, 0.86);
-  --color-text-primary: #e8f0ea;
-  --color-text-secondary: #9db1a3;
-  --color-text-accent: #4ade80;
-  --color-text-on-accent: #04140a;
-  --color-accent: #4ade80;
-  --color-border-subtle: #1f2a23;
-  --color-border-control: #5f7a69;
-  --color-glow-center: rgba(74, 222, 128, 0.15);
-  --color-focus-ring: #4ade80;
+  --color-bg-page: #121612;
+  --color-bg-surface: rgba(18, 22, 18, 0.78);
+  --color-bg-nav: rgba(18, 22, 18, 0.8);
+  --color-text-primary: #eef6f0;
+  --color-text-secondary: #a4b7aa;
+  --color-text-accent: #84e8b5;
+  --color-text-on-accent: #0b120d;
+  --color-accent: #84e8b5;
+  --color-border-subtle: rgba(146, 180, 158, 0.18);
+  --color-border-control: rgba(132, 232, 181, 0.38);
+  --color-glow-center: rgba(132, 232, 181, 0.18);
+  --color-focus-ring: #84e8b5;
 
   color-scheme: dark;
 }
 
-/* ─── Base ─────────────────────────────────────────────────────────────────── */
-
 html,
 body {
-  background: var(--color-bg-page);
+  background:
+    radial-gradient(circle at top, rgba(29, 138, 104, 0.12), transparent 28%),
+    linear-gradient(180deg, var(--color-bg-page), color-mix(in srgb, var(--color-bg-page) 90%, #f7f1e8));
   color: var(--color-text-primary);
+}
+
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.28;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0)),
+    radial-gradient(circle at 20% 20%, rgba(0, 0, 0, 0.03) 0 1px, transparent 1px 100%);
+  background-size: auto, 16px 16px;
+  mix-blend-mode: multiply;
 }
 
 ::selection {
   background: var(--color-accent);
   color: var(--color-text-on-accent);
 }
-
-/* ─── Scroll reveal ────────────────────────────────────────────────────────── */
 
 [data-reveal] {
   opacity: 0;
@@ -82,8 +88,6 @@ body {
   }
 }
 
-/* ─── Live ledger feed ─────────────────────────────────────────────────────── */
-
 @keyframes feedSlideIn {
   from {
     opacity: 0;
@@ -94,8 +98,6 @@ body {
     transform: none;
   }
 }
-
-/* ─── Status pulse (agent / demo state) ────────────────────────────────────── */
 
 @keyframes pulseDot {
   0%,
@@ -123,84 +125,44 @@ body {
   animation: spinSlow 0.45s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-/* ─── Landing ambient system ────────────────────────────────────────────────── */
-
-/* The landing page mounts a single fixed gradient (AmbientBackdrop) that runs
-   from the hero all the way through the footer, so every per-section fill is
-   gone. When that root is present the whole shell is repainted on a dark
-   palette: each `var(--color-*)` utility inside the page — hero copy, glass
-   cards, nav, footer — resolves light-on-dark automatically instead of each
-   component having to know it is sitting on a dark surface.
-
-   Scoping the override with `:has()` keeps the rest of the site on the normal
-   theme palette and leaves the theme toggle working everywhere. */
-body:has([data-ambient-root]) {
-  --color-bg-page: #08090c;
-  --color-bg-nav: rgba(8, 9, 12, 0.55);
-  --color-text-primary: #e8f0ea;
-  --color-text-secondary: #9db1a3;
-  --color-text-accent: #4ade80;
-  --color-text-on-accent: #04140a;
-  --color-accent: #10b981;
-  --color-border-subtle: rgba(255, 255, 255, 0.08);
-  --color-border-control: rgba(255, 255, 255, 0.14);
-}
-
-/* The footer has to read as the tail of the same gradient: no opaque slab and
-   no hard rule across the page. It also needs a stacking context of its own,
-   because the ambient layer is `fixed` (and therefore positioned) while the
-   footer is not — without this the gradient would paint over the links. */
-body:has([data-ambient-root]) footer {
-  position: relative;
-  z-index: 10;
-  background: transparent;
-  border-top: 0;
-}
-
-/* ─── Glass cards ──────────────────────────────────────────────────────────── */
-
-/* Spec surface: backdrop-blur-md bg-white/[0.03] border-white/[0.08]
-   rounded-2xl, plus a lift on hover so the cards feel like physical panes
-   catching the ambient light. */
-.glass {
-  border-radius: 1rem;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  -webkit-backdrop-filter: blur(12px);
-  backdrop-filter: blur(12px);
+.card {
+  border-radius: 20px;
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-subtle);
+  padding: 20px;
+  box-shadow: 0 18px 42px -30px rgba(26, 44, 35, 0.3);
   transition:
-    transform 0.35s cubic-bezier(0.22, 1, 0.36, 1),
-    background-color 0.35s ease,
-    border-color 0.35s ease,
-    box-shadow 0.35s ease;
+    border-color 0.2s ease,
+    box-shadow 0.2s ease,
+    transform 0.2s ease;
 }
 
-.glass:hover {
-  transform: translateY(-2px);
-  background: rgba(255, 255, 255, 0.05);
-  border-color: rgba(255, 255, 255, 0.16);
-  box-shadow: 0 18px 40px -20px rgba(16, 185, 129, 0.45);
-}
-
-/* A quieter variant for dense repeated rows, where a lift per row would be
-   noise. Keeps the same surface treatment without the hover elevation. */
-.glass-flat {
-  border-radius: 1rem;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  -webkit-backdrop-filter: blur(12px);
-  backdrop-filter: blur(12px);
+.card-hover:hover {
+  border-color: var(--color-accent);
+  box-shadow: 0 22px 50px -28px rgba(29, 138, 104, 0.32);
+  transform: translateY(-1px);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .glass,
-  .glass:hover {
-    transform: none;
+  .card,
+  .card-hover:hover {
     transition: none;
+    box-shadow: none;
+    transform: none;
   }
 }
 
-/* ─── Small utilities used across pages ────────────────────────────────────── */
+.hero-glow::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(
+    ellipse 48% 54% at 50% 38%,
+    var(--color-glow-center),
+    transparent 72%
+  );
+}
 
 .mu {
   color: var(--color-text-secondary);
@@ -210,4 +172,11 @@ body:has([data-ambient-root]) footer {
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border-subtle);
   border-radius: 1rem;
+  box-shadow: 0 22px 50px -32px rgba(26, 44, 35, 0.28);
+}
+
+@media (min-width: 1024px) {
+  .hero-grid {
+    grid-template-columns: 1.2fr 0.8fr;
+  }
 }

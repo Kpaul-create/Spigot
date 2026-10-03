@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import Link from 'next/link';
 import {
   fetchDashboardStats,
   fetchTransactions,
@@ -71,6 +72,8 @@ export default function DashboardPage() {
     { label: 'Active endpoints', value: formatNumber(stats?.activeEndpoints ?? 0) },
     { label: 'Avg settlement', value: formatCurrency(stats?.avgSettlement ?? 0) },
   ];
+  const revenuePoints = (stats?.revenueHistory ?? []).map((point) => point.amount);
+  const hasRevenue = revenuePoints.some((amount) => amount > 0);
 
   return (
     <div className="max-w-6xl mx-auto px-5 py-16">
@@ -83,10 +86,26 @@ export default function DashboardPage() {
             Money in, calls out.
           </h1>
         </div>
-        <p className="text-xs text-[var(--color-text-secondary)]">
-          Auto-refreshes every {REFRESH_MS / 1000}s
-          {updatedAt ? ` · updated ${updatedAt}` : ''}
-        </p>
+        <div className="flex flex-col items-start gap-3 sm:items-end">
+          <p className="text-xs text-[var(--color-text-secondary)]">
+            Auto-refreshes every {REFRESH_MS / 1000}s
+            {updatedAt ? ` · updated ${updatedAt}` : ''}
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <Link
+              href="/demo"
+              className="rounded-full bg-[var(--color-accent)] px-4 py-2 text-sm font-semibold text-[var(--color-text-on-accent)] hover:opacity-90"
+            >
+              Run a paid call
+            </Link>
+            <Link
+              href="/directory"
+              className="rounded-full border border-[var(--color-border-control)] px-4 py-2 text-sm font-medium text-[var(--color-text-primary)] hover:bg-[var(--color-bg-surface)]"
+            >
+              Explore endpoints
+            </Link>
+          </div>
+        </div>
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-10">
@@ -100,7 +119,19 @@ export default function DashboardPage() {
 
       <div className="panel p-6 mb-10">
         <h2 className="font-bold text-lg mb-4">Revenue, last 30 days</h2>
-        <Sparkline points={(stats?.revenueHistory ?? []).map((p) => p.amount)} />
+        {hasRevenue ? (
+          <Sparkline points={revenuePoints} />
+        ) : (
+          <div className="flex min-h-32 flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-[var(--color-border-control)] px-4 text-center">
+            <p className="text-sm font-medium">No settled revenue in this server session yet.</p>
+            <p className="text-xs text-[var(--color-text-secondary)]">
+              The chart fills from confirmed payments and resets when this process restarts.
+            </p>
+            <Link href="/demo" className="text-sm font-semibold text-[var(--color-text-accent)] underline">
+              Run the live demo
+            </Link>
+          </div>
+        )}
       </div>
 
       <div className="panel overflow-hidden">

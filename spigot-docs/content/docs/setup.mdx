@@ -1,420 +1,260 @@
 ---
 title: Setup
-description: Get the Next.js app and the Tempo CLI running locally.
+description: Get the Next.js gateway running with a real Tempo signer.
 ---
 
 ## Prerequisites
 
-### Required
-
 | Requirement | Version | Notes |
 |---|---|---|
-| Node.js | ≥ 20 | Required for ESM and native fetch |
-| npm | ≥ 10 | Bundled with Node.js |
-| Linux or macOS | — | Required for Dynamic MPC (Neon binaries) |
+| Node.js | 20+ | Developed on 24.19.0. The app itself needs nothing exotic |
+| npm | 10+ | Bundled with Node |
+| A funded Tempo Moderato address | — | Only needed to actually settle payments |
 
-### Optional
-
-| Requirement | Purpose |
-|---|---|
-| Docker | Containerized deployment |
-| Redis | Receipt caching and rate limiting |
-| A Dynamic account | Environment ID + API token |
-
-### Platform Support
-
-| Platform | Full MPC | Dry-Run | Self-Test |
-|---|---|---|---|
-| Linux (x64) | ✅ | ✅ | ✅ |
-| Linux (ARM) | ✅ | ✅ | ✅ |
-| macOS (Intel) | ✅ | ✅ | ✅ |
-| macOS (Apple Silicon) | ✅ | ✅ | ✅ |
-| Windows | ❌ | ✅ | ✅ |
-
-> **Windows users:** Use `npm run run:dry` for steps 3–5 with a local signer, or run the full flow in a Linux VM / WSL2 / Docker container.
+There is **no** Linux/macOS requirement, no Redis, no database and no Docker dependency. If you only want to read the docs and hit the free routes, no credentials at all.
 
 ---
 
 ## Installation
 
-### 1. Clone the Repository
+### 1. Clone and install
 
 ```bash
 git clone https://github.com/your-org/spigot.git
-cd spigot
-```
-
-### 2. Install Dependencies
-
-```bash
+cd spigot/spigot-docs
 npm install
 ```
 
-### 3. Configure Environment
+The app lives in `spigot-docs/`, not at the repo root.
+
+### 2. Environment file
 
 ```bash
-cp .env.example .env
+cp .env.example .env.local
 ```
 
-Edit `.env` with your Dynamic credentials:
+`.env.local` wins over `.env`, and keys already present in the process environment are never overridden by either.
+
+### 3. Minimum to boot
+
+```bash
+NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_...
+CLERK_SECRET_KEY=sk_...
+```
+
+`app/layout.tsx` mounts `ClerkProvider`, `components/nav.tsx` renders the sign-in buttons, and `proxy.ts` runs `clerkMiddleware`. Without these the app still builds, but every page renders a provider with no publishable key.
+
+### 4. Minimum to settle payments
+
+Pick one signer.
 
 ```dotenv
-# Step 1: DynamicEvmWalletClient
-DYNAMIC_ENVIRONMENT_ID=your-env-id
-DYNAMIC_API_TOKEN=your-api-token
-DYNAMIC_WALLET_PASSWORD=your-secure-password
+# Option A — local key. Simplest, works everywhere.
+TEMPO_SIGNER=privateKey
+TEMPO_PRIVATE_KEY=0x...
+TEMPO_MERCHANT_ADDRESS=0xYourAddress
+```
 
-# Step 2: Wallet creation
+```dotenv
+# Option B — Dynamic MPC. No single party can sign alone.
+TEMPO_SIGNER=dynamic
+DYNAMIC_ENVIRONMENT_ID=...
+DYNAMIC_API_TOKEN=...
+DYNAMIC_WALLET_PASSWORD=...
 DYNAMIC_THRESHOLD_SIGNATURE_SCHEME=TWO_OF_TWO
 DYNAMIC_BACKUP_TO_CLIENT_SHARE_SERVICE=true
 DYNAMIC_WALLET_STORE=.dynamic-wallet.json
-DYNAMIC_RESET_WALLET=false
-
-# Step 3: Tempo Moderato faucet
-TEMPO_RPC_URL=https://rpc.moderato.tempo.xyz
-TEMPO_SKIP_FAUCET=false
-
-# Step 5: MPP payment
-MPP_URL=https://mpp.dev/api/ping/paid
-MPP_POLYFILL_FETCH=false
 ```
 
-### 4. Verify Installation
+The app payment broadcaster currently supports `TEMPO_SIGNER=privateKey` only. Dynamic wallet setup is available for other signing flows, but app settlements remain disabled until Dynamic broadcast support is implemented.
+
+`DYNAMIC_WALLET_PASSWORD` is required whenever `DYNAMIC_BACKUP_TO_CLIENT_SHARE_SERVICE` is on, which is the default. `isTempoSignerConfigured()` reports `false` unless every variable in `DYNAMIC_REQUIRED_ENV` is present, so a partial Dynamic config is reported as unconfigured rather than failing mid-payment.
+
+> `TEMPO_MERCHANT_ADDRESS` has no fallback. `/api/pay` returns `503` until it is set to a valid wallet you control. The zero address and the known `0x…dEaD` address are rejected before any transfer is sent.
+
+### 5. Fund the wallet
 
 ```bash
-# Offline self-test (no credentials needed)
-npm run self-test
-
-# Full walkthrough (Linux/macOS only)
-npm run run
-
-# Dry-run (any platform)
-npm run run:dry
+curl -X POST https://rpc.moderato.tempo.xyz \
+  -H "content-type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tempo_fundAddress","params":["0xYourAddress"]}'
 ```
+
+### 6. Minimum to run the agent
+
+```dotenv
+LLM_PROVIDER=gateway
+LLM_GATEWAY_API_KEY=...
+```
+
+Or `LLM_PROVIDER=openai` with `OPENAI_API_KEY`, or `LLM_PROVIDER=gemini` with `GEMINI_API_KEY`. `getChatModel()` throws a message naming the missing variable rather than letting it surface as a 500 mid-call. Without a key the agent routes do not work; everything else does.
+
+All three providers are reached through the same OpenAI-compatible client, so each is only a base URL and a key. A Google AI Studio key works as-is:
+
+```dotenv
+LLM_PROVIDER=gemini
+GEMINI_API_KEY=...
+```
+
+That resolves to `https://generativelanguage.googleapis.com/v1beta/openai` with model `gemini-3.8-flash`, Google's OpenAI-compatibility layer. For any other OpenAI-compatible host set `LLM_BASE_URL` instead — it overrides the base URL for whichever provider is selected, so OpenRouter or a local vLLM needs no code change.
 
 ---
 
-## Environment Variables
+## Environment variables
 
-### Dynamic Configuration
+Every variable below is read by code in this repo. Nothing here is aspirational.
 
-| Variable | Required | Default | Description |
+### App
+
+| Variable | Required | Default | Used by |
 |---|---|---|---|
-| `DYNAMIC_ENVIRONMENT_ID` | ✅ | — | Dynamic environment ID (Dashboard → Developers → Environments) |
-| `DYNAMIC_API_TOKEN` | ✅ | — | Dynamic API token (Dashboard → Developers → API tokens) |
-| `DYNAMIC_WALLET_PASSWORD` | Conditional | — | Password for client share backup (required when backup is enabled) |
-| `DYNAMIC_BASE_API_URL` | — | — | Override for self-hosted/staging Dynamic API |
-| `DYNAMIC_BASE_MPC_RELAY_API_URL` | — | — | Override for self-hosted/staging MPC relay |
-| `DYNAMIC_THRESHOLD_SIGNATURE_SCHEME` | — | `TWO_OF_TWO` | `TWO_OF_TWO`, `TWO_OF_THREE`, or `THREE_OF_FIVE` |
-| `DYNAMIC_BACKUP_TO_CLIENT_SHARE_SERVICE` | — | `true` | Back up client share to Dynamic's service |
-| `DYNAMIC_WALLET_STORE` | — | `.dynamic-wallet.json` | Local file for wallet metadata |
-| `DYNAMIC_RESET_WALLET` | — | `false` | Re-run keygen and replace stored wallet |
+| `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | yes | — | `app/layout.tsx`, `components/nav.tsx` |
+| `CLERK_SECRET_KEY` | yes | — | `proxy.ts` |
+| `LLM_PROVIDER` | no | `gateway` | `lib/llm.ts` — `gateway`, `openai` or `gemini` |
+| `LLM_MODEL` | no | per provider | overrides the model for whichever provider is set |
+| `LLM_BASE_URL` | no | per provider | overrides the base URL for whichever provider is set; use for any other OpenAI-compatible host |
+| `LLM_GATEWAY_API_KEY` | for `gateway` | — | `lib/llm.ts` |
+| `LLM_GATEWAY_BASE_URL` | no | `https://api.llmgateway.dev/v1` | `lib/llm.ts` |
+| `LLM_GATEWAY_MODEL` | no | `anthropic/claude-3.5-sonnet` | `lib/llm.ts` |
+| `OPENAI_API_KEY` | for `openai` | — | `lib/llm.ts` |
+| `OPENAI_MODEL` | no | `gpt-4o-mini` | `lib/llm.ts` |
+| `OPENAI_BASE_URL` | no | SDK default | `lib/llm.ts` |
+| `GEMINI_API_KEY` | for `gemini` | — | `lib/llm.ts` |
+| `GEMINI_MODEL` | no | `gemini-3.8-flash` | `lib/llm.ts` |
+| `GEMINI_BASE_URL` | no | `https://generativelanguage.googleapis.com/v1beta/openai` | `lib/llm.ts` |
+| `OPENAI_API_KEY` | for `openai` | — | `lib/llm.ts` |
+| `OPENAI_MODEL` | no | `gpt-4o-mini` | `lib/llm.ts` |
 
-### Tempo Configuration
+### Tempo signer and settlement
 
-| Variable | Required | Default | Description |
+| Variable | Required | Default | Used by |
 |---|---|---|---|
-| `TEMPO_RPC_URL` | — | `https://rpc.moderato.tempo.xyz` | Tempo Moderato RPC endpoint |
-| `TEMPO_SKIP_FAUCET` | — | `false` | Skip faucet funding (wallet already funded) |
+| `TEMPO_SIGNER` | no | `privateKey` | App settlement currently broadcasts with `privateKey`; Dynamic broadcast is not implemented |
+| `TEMPO_PRIVATE_KEY` | for `privateKey` | — | `lib/tempo/signer.ts` |
+| `TEMPO_MERCHANT_ADDRESS` | required for settlements | — | `lib/tempo/payment.ts` |
+| `TEMPO_RPC_URL` | no | `https://rpc.moderato.tempo.xyz` | `lib/tempo/chain.ts` |
+| `SPIGOT_SELF_URL` | no | `http://localhost:3000` | base URL the agent calls its own endpoints with |
 
-### MPP Configuration
+Set `SPIGOT_SELF_URL` when the agent runs in a process that cannot reach itself at `localhost` — for example a container that forwards to the host. Leaving it at the default in a container makes the agent call itself and never connect.
 
-| Variable | Required | Default | Description |
+### Dynamic (only when `TEMPO_SIGNER=dynamic`)
+
+| Variable | Required | Default | Notes |
 |---|---|---|---|
-| `MPP_URL` | — | `https://mpp.dev/api/ping/paid` | 402-protected endpoint to pay for |
-| `MPP_POLYFILL_FETCH` | — | `false` | Also wrap `globalThis.fetch` |
+| `DYNAMIC_ENVIRONMENT_ID` | yes | — | Dashboard → Developers → Environments |
+| `DYNAMIC_API_TOKEN` | yes | — | Dashboard → Developers → API tokens |
+| `DYNAMIC_WALLET_PASSWORD` | when backup enabled | — | Encrypts the client share |
+| `DYNAMIC_THRESHOLD_SIGNATURE_SCHEME` | no | `TWO_OF_TWO` | `TWO_OF_TWO`, `TWO_OF_THREE`, `THREE_OF_FIVE` |
+| `DYNAMIC_BACKUP_TO_CLIENT_SHARE_SERVICE` | no | `true` | Off means no password needed |
+| `DYNAMIC_WALLET_STORE` | no | `.dynamic-wallet.json` | Non-secret metadata only |
+| `DYNAMIC_RESET_WALLET` | no | `false` | `true` re-runs keygen |
+| `DYNAMIC_BASE_API_URL` | no | Dynamic's | Self-hosted or staging |
+| `DYNAMIC_BASE_MPC_RELAY_API_URL` | no | Dynamic's | Self-hosted or staging |
 
-### Dry-Run Configuration
+### Paid endpoint upstreams
 
-| Variable | Required | Default | Description |
+Neither provider needs a key at the volumes this app sees, so these are optional.
+
+| Variable | Required | Default | Used by |
 |---|---|---|---|
-| `DYNAMIC_TEMPO_DRY_RUN_PRIVATE_KEY` | — | Anvil test key | Private key for dry-run signing |
+| `COINGECKO_API_KEY` | no | free tier | `lib/data/market.ts` — sent as a bearer token when set, for a higher rate limit |
 
-### CLI Flags
+Open-Meteo has no key option. Responses are cached in-process: 60s for the market snapshot, 15 minutes for weather, 24 hours for city geocoding.
 
-All environment variables can be overridden via CLI flags:
+### CLI only
 
-```bash
-node src/tempo/run.js \
-  --skip-faucet \              # Skip faucet funding
-  --reset \                    # Re-run keygen
-  --scheme TWO_OF_THREE \      # Override threshold scheme
-  --url https://my.api.com/paid \  # Override MPP URL
-  --dry-run \                  # Use local key instead of Dynamic
-  --key 0x…                    # Specific private key for dry-run
-```
+Read by `cli/tempo/`, not by the app.
 
----
-
-## Configuration Options
-
-### Threshold Signature Schemes
-
-| Scheme | Shares | Threshold | Use Case |
+| Variable | Required | Default | Notes |
 |---|---|---|---|
-| `TWO_OF_TWO` | 2 | 2 | Maximum security; both shares required |
-| `TWO_OF_THREE` | 3 | 2 | One share can be lost; still secure |
-| `THREE_OF_FIVE` | 5 | 3 | Enterprise; multiple backup shares |
-
-### Wallet Store
-
-The wallet store is a local JSON file containing **non-secret metadata only**:
-
-```json
-{
-  "accountAddress": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
-  "createdAt": "2026-09-30T12:00:00.000Z",
-  "thresholdSignatureScheme": "TWO_OF_TWO",
-  "walletMetadata": {
-    "accountAddress": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
-    "walletId": "wallet-abc123",
-    "shareSetId": "shareset-def456",
-    "derivationPath": "m/44'/60'/0'/0/0"
-  }
-}
-```
-
-> **Security:** Key shares are never stored locally. They are recovered from Dynamic's client share service on demand using `DYNAMIC_WALLET_PASSWORD`.
+| `MPP_URL` | no | `https://mpp.dev/api/ping/paid` | External 402 endpoint the walkthrough pays |
+| `MPP_POLYFILL_FETCH` | no | `false` | Replaces `globalThis.fetch` when on |
+| `TEMPO_SKIP_FAUCET` | no | `false` | Skip `tempo_fundAddress` |
+| `DYNAMIC_TEMPO_DRY_RUN_PRIVATE_KEY` | no | Anvil test key | Local signing for `--dry-run` |
 
 ---
 
-## Running in Development
-
-### Full Walkthrough (Linux/macOS)
+## Running
 
 ```bash
-npm run run
+npm run dev            # http://localhost:3000, Turbopack
+npm run build          # production build
+npm run start          # serve the build
+npm run types:check    # tsc --noEmit
+npm run lint           # see Known Issues
 ```
 
-This executes all five steps:
-
-1. **Authenticate** — Build and authenticate a `DynamicEvmWalletClient`
-2. **Create Wallet** — Run MPC keygen (`TWO_OF_TWO`) with client share backup
-3. **Fund** — Mint test stablecoins from the Tempo Moderato faucet
-4. **Build Signer** — Wrap the MPC signer in a Tempo-compatible viem account
-5. **Pay** — Pay for a 402-protected endpoint with MPP and print the receipt
-
-### Dry-Run (Any Platform)
+### Verify
 
 ```bash
-npm run run:dry
+curl -s localhost:3000/api/health
+# {"status":"ok","timestamp":"..."}
+
+curl -s localhost:3000/api/pay
+# reports signer, merchant-address, and payment readiness without sending a transfer
 ```
 
-Skips steps 1–2 and signs with a local private key instead of the MPC network. Useful for:
-- Windows development
-- CI/CD pipelines
-- Testing the payment flow without Dynamic credentials
+`configured: false` means no usable signer — see step 4.
 
-### Self-Test (Offline)
+### CLI walkthrough
+
+A separate ESM script under `cli/tempo/` that exercises Dynamic wallet creation, faucet funding and `mppx.fetch` against an external 402 endpoint.
 
 ```bash
-npm run self-test
+npm run self-test      # offline, no credentials, no network
+npm run cli:dry        # local private key, full sequence
+npm run cli            # Dynamic MPC against Moderato
 ```
 
-Validates all signing and serialization logic without any network calls or credentials:
-- Tempo transaction serialization (type `0x76`)
-- Fee-payer (sponsored) transactions (type `0x78`)
-- EIP-1559 fallback
-- `signMessage` / `signTypedData` / `sign`
-- MPP client creation
+`self-test` asserts the things that are easy to break silently: the signed bytes start with `0x76`, the sign payload equals `Transaction.z_TxEnvelopeTempo.getSignPayload`, the bytes handed to Dynamic hash to that same payload, a stale signature is never signed over, sponsored envelopes come out as `0x78`, EIP-1559 falls back to `0x02`, and `signMessage`/`signTypedData` recover to the account address.
 
 ---
 
-## Running in Production
+## Deployment
 
-### Environment Checklist
+Any host that runs Node and keeps one process. `npm run build && npm run start`.
 
-Before deploying to production:
+### Things that will bite you
 
-- [ ] Use a dedicated Dynamic environment (not the test environment)
-- [ ] Set a strong `DYNAMIC_WALLET_PASSWORD` (use a password manager)
-- [ ] Set `DYNAMIC_RESET_WALLET=false`
-- [ ] Set `TEMPO_SKIP_FAUCET=true` (use a funded wallet)
-- [ ] Set `MPP_POLYFILL_FETCH=false` (avoid intercepting unrelated fetches)
-- [ ] Configure a production `TEMPO_RPC_URL` (or use the default mainnet RPC)
-- [ ] Set up secrets management (AWS Secrets Manager, Doppler, etc.)
-- [ ] Configure monitoring and alerting
-- [ ] Set up log aggregation
+- **One instance only.** The replay `Map`, `lib/store.ts` and the LangGraph `MemorySaver` are all in-process. A load balancer without sticky sessions means two instances can each redeem the same receipt.
+- **Keep the process alive.** The server holds the configured signing wallet and signs on demand. Any instance restart drops transactions, revenue history and agent memory.
+- **Set `TEMPO_MERCHANT_ADDRESS`.** Without a valid merchant address, settlement is disabled.
+- **`TEMPO_PRIVATE_KEY` in a secret manager**, never in the image or the repo.
+- **Node 20+.** No native build step is needed, so most PaaS images work as-is.
 
-### Production Script
+### Vercel
 
-```bash
-# Use a process manager
-npm install -g pm2
-
-# Start with PM2
-pm2 start src/tempo/run.js --name spigot
-
-# Or with explicit env vars
-DYNAMIC_ENVIRONMENT_ID=prod-env \
-DYNAMIC_API_TOKEN=prod-token \
-DYNAMIC_WALLET_PASSWORD=prod-password \
-pm2 start src/tempo/run.js --name spigot
-```
+Workable for the read-only surface — docs, landing page, free routes. The paid flow needs the signing process to persist between requests, which serverless functions do not guarantee, and the in-memory store resets on every cold start.
 
 ---
 
-## Docker Deployment
+## Known issues
 
-### Dockerfile
-
-```dockerfile
-FROM node:20-slim
-
-WORKDIR /app
-
-# Copy package files
-COPY package.json package-lock.json ./
-
-# Install dependencies
-RUN npm ci --omit=dev
-
-# Copy source
-COPY src/ ./src/
-COPY .env.example .env.example
-
-# Create volume for wallet store
-VOLUME ["/app/data"]
-
-# Default: run the walkthrough
-CMD ["node", "src/tempo/run.js"]
-```
-
-### Build and Run
-
-```bash
-# Build
-docker build -t spigot .
-
-# Run with environment variables
-docker run --rm \
-  -e DYNAMIC_ENVIRONMENT_ID=your-env-id \
-  -e DYNAMIC_API_TOKEN=your-api-token \
-  -e DYNAMIC_WALLET_PASSWORD=your-password \
-  -v spigot-data:/app/data \
-  spigot
-
-# Run dry-run (any platform)
-docker run --rm spigot node src/tempo/run.js --dry-run
-
-# Run self-test
-docker run --rm spigot node src/tempo/selfTest.js
-```
-
-### Docker Compose
-
-```yaml
-version: "3.8"
-
-services:
-  spigot:
-    build: .
-    environment:
-      - DYNAMIC_ENVIRONMENT_ID=${DYNAMIC_ENVIRONMENT_ID}
-      - DYNAMIC_API_TOKEN=${DYNAMIC_API_TOKEN}
-      - DYNAMIC_WALLET_PASSWORD=${DYNAMIC_WALLET_PASSWORD}
-      - TEMPO_RPC_URL=${TEMPO_RPC_URL:-https://rpc.moderato.tempo.xyz}
-      - MPP_URL=${MPP_URL:-https://mpp.dev/api/ping/paid}
-    volumes:
-      - spigot-data:/app/data
-    restart: unless-stopped
-
-volumes:
-  spigot-data:
-```
-
-```bash
-docker compose up -d
-```
-
----
-
-## Vercel Deployment
-
-### For the UI (Landing Page)
-
-The UI is a static site. Deploy it to Vercel:
-
-1. Push your repo to GitHub
-2. Import the repo in Vercel
-3. Set the root directory to `src/ui/`
-4. Framework preset: **Other** (or **Vite** if you add a build step)
-5. Build command: `echo "static site"`
-6. Output directory: `./`
-
-### For the API (Serverless)
-
-If you deploy the API gateway as a Vercel serverless function:
-
-```javascript
-// api/v1/endpoint.js
-import { createMppClient } from '../../src/tempo/mppClient.js';
-
-export default async function handler(req, res) {
-  // Your business logic here
-  const result = await doExpensiveWork(req.body);
-
-  // Return 402 if payment not provided
-  if (!req.headers['payment-receipt']) {
-    return res.status(402).json({
-      error: 'payment_required',
-      payment: {
-        method: 'tempo',
-        amount: '40000',
-        token: '0x20c0000000000000000000000000000000000000',
-        chainId: 42431,
-      },
-    });
-  }
-
-  // Verify receipt and serve
-  return res.status(200).json({ result });
-}
-```
-
-> **Note:** Vercel serverless functions run on Linux, so Dynamic MPC works. However, the 10-second timeout may be insufficient for key ceremony. Use a separate service for wallet creation.
-
----
-
-## Railway Deployment
-
-### Deploy as a Service
-
-1. Push your repo to GitHub
-2. Import the repo in Railway
-3. Add environment variables in the Railway dashboard
-4. Set the start command: `node src/tempo/run.js`
-5. Add a volume mount at `/app/data` for the wallet store
-
-### `railway.json`
-
-```json
-{
-  "$schema": "https://railway.app/railway.schema.json",
-  "build": {
-    "builder": "NIXPACKS"
-  },
-  "deploy": {
-    "startCommand": "node src/tempo/run.js",
-    "healthcheckPath": "/health",
-    "healthcheckTimeout": 300,
-    "restartPolicyType": "ON_FAILURE",
-    "restartPolicyMaxRetries": 3
-  }
-}
-```
+| Issue | Detail |
+|---|---|
+| `npm run lint` fails | `Error: typescript-eslint does not support TS 7.0.` The project pins `typescript: ^7.0.2` while `eslint-config-next` 16.3.5 does not support it. Fix by dropping TypeScript to 6.x, or by upgrading the eslint config. Not done here because it is a dependency-policy call |
+| `LLM_GATEWAY_API_KEY` ships empty in `.env.example` | `/api/agent/run` and `/api/agent/chat` cannot run until you fill it in. Everything else works without it — the paid endpoints, the demo page and the full three-call handshake |
+| Agent conversation memory is not wired | `threadId` is accepted and returned, but checkpoints are never enumerated or reused |
+| Paid callers can hit a 502 they already paid for | Upstream (Open-Meteo, CoinGecko) is fetched after the receipt verifies, by design. An outage between the two leaves the caller charged. Responses carry the `payment` block so the charge is traceable |
 
 ---
 
 ## Troubleshooting
 
-### Common Issues
-
-| Issue | Cause | Solution |
+| Symptom | Cause | Fix |
 |---|---|---|
-| `Missing configuration: DYNAMIC_ENVIRONMENT_ID` | `.env` not created or incomplete | Copy `.env.example` to `.env` and fill in values |
-| `unsupported system` | Running on Windows | Use `--dry-run` or run in Docker/WSL2 |
-| `tempo_fundAddress failed` | Faucet rate-limited | Wait and retry; or use `TEMPO_SKIP_FAUCET=true` |
-| `authentication failed` | Invalid API token | Regenerate token in Dynamic dashboard |
-| `wallet already exists` | Wallet store file exists | Delete `.dynamic-wallet.json` or use `--reset` |
-| `MPP request failed with status 402` | Payment not accepted | Check receipt format; verify on-chain |
+| `configured: false` on `/api/pay` | No signer | Set `TEMPO_SIGNER=privateKey` + `TEMPO_PRIVATE_KEY`, or `dynamic` + all three Dynamic vars |
+| `POST /api/pay` returns `503` | Signer unconfigured | Same as above |
+| Clerk provider error on every page | Missing publishable key | Set `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` |
+| `LLM_GATEWAY_API_KEY is not set` | Agent model unconfigured | Set the key, or switch `LLM_PROVIDER` to `openai` or `gemini`. Only the agent routes are affected — `/demo` performs a real payment without one |
+| Agent run returns `fetch failed` | `SPIGOT_SELF_URL` unreachable from the agent's process | Point it at a reachable base URL |
+| `Weather upstream unavailable` / `Unknown city "…"` | 502: paid route, but Open-Meteo could not answer | Check the spelling, or retry. The payment already settled and is in the response's `payment` block |
+| `Market data upstream unavailable` | 502: CoinGecko failed or rate-limited | Wait 60s, or set `COINGECKO_API_KEY`. Responses are cached 60s per instance |
+| `Could not pay for the tool` in the agent chat | Agent wallet balance below the tool price | Fund it — the balance is on `/api/agent/status`, in `balanceToken` |
+| `Paid 0.001, need at least 0.005` | Underpaid | The price is a floor |
+| `Payment settled to 0x…, not the merchant address` | Wrong recipient | Omit `to`, or set `TEMPO_MERCHANT_ADDRESS` and retry |
+| `Receipt has already been redeemed` | Replay | Pay again for a new receipt |
+| `Receipt is for /api/other, not /api/weather` | Receipt bought for another route | `endpoint` is bound into the receipt |
+| `Receipt belongs to agent X, not Y` | `X-Agent-Id` mismatch | Match it, or omit the header |
+| Faucet call fails | Rate limited | Wait, or send tokens from another account |
+| Lint dies on typescript-eslint | TypeScript 7 vs the eslint config | See Known issues |
